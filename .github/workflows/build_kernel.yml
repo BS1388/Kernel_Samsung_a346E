@@ -1,47 +1,34 @@
-name: Build Samsung A34 Kernel
+name: Build A346E Kernel
+
 on:
   push:
-    branches: [ "a346E-Test" ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 300
     steps:
-      - name: Checkout Kernel Source
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v5
         with:
-          ref: a346E-Test
-          submodules: 'recursive'
-          lfs: true
+          submodules: true
+          fetch-depth: 1
 
-      - name: Checkout AnyKernel3
-        uses: actions/checkout@v4
-        with:
-          repository: lemniskett/AnyKernel3
-          path: zipper
-
-      - name: Fix Prebuilts Path for Bazel
+      - name: Free up disk space
         run: |
-          mkdir -p kernel/prebuilts/build-tools/path/linux-x86
-          # لینک کردن تمام ابزارهای سیستم برای جلوگیری از ارورهای بعدی Bazel
-          ln -sf /usr/bin/* kernel/prebuilts/build-tools/path/linux-x86/
-          ln -sf $(which python3) kernel/prebuilts/build-tools/path/linux-x86/python
+          sudo apt-get remove --purge -y "php*" "dotnet*" "mysql*" "nodejs*" "clang*" "google*" || true
+          sudo apt-get autoremove -y
+          sudo apt-get clean
+          sudo rm -rf /usr/local /usr/share/dotnet /opt/ghc "$AGENT_TOOLSDIRECTORY"
 
-      - name: Android Kernel Build
-        uses: lemniskett/android-kernel-actions@master
-        id: build
-        env:
-          NAME: Kernel_A346E
-          KERNEL_PATH: kernel/kernel_device_modules-6.6
-        with:
-          arch: arm64
-          compiler: clang/15/binutils
-          defconfig: a34x_defconfig
-          image: Image.gz
+      - name: Run build script
+        run: |
+          chmod +x ./build_kernel.sh
+          bash ./build_kernel.sh
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload kernel Image artifact
+        uses: actions/upload-artifact@v5
         with:
-          name: A346E-Kernel-ZIP
-          path: ${{ steps.build.outputs.outfile }}
+          name: kernel-image
+          path: Image
