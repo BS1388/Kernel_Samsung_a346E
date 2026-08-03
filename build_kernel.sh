@@ -42,7 +42,7 @@ cd "${ROOT_DIR}/kernel"
 #    فیل شدن بیلد قبلیت شده بود: tools/bazel اصلاً وجود نداشت!)
 # ---------------------------------------------------------------
 ln -sfn ../kernel-6.6 kernel-6.6
-ln -sfn build/kernel/kleaf/bazel.WORKSPACE WORKSPACE
+ln -sfn build/bazel_mgk_rules/kleaf/bazel.WORKSPACE WORKSPACE
 ln -sfn ../build/kernel/kleaf/bazel.sh tools/bazel
 chmod +x build/kernel/kleaf/bazel.sh
 
@@ -81,6 +81,9 @@ export DIST_DIR="../out/target/product/a34x/obj/KLEAF_OBJ/dist"
 export DEFCONFIG_OVERLAYS="mt6877_overlay.config mt6877_teegris_5_overlay.config"
 export PROJECT="mgk_64_k66"
 export MODE="user"
+# اینا رو @mgk_info (یه بازل ریپوی مخصوص سامسونگ) مستقیم از environment می‌خونه
+export KERNEL_VERSION="kernel-6.6"
+export SOURCE_DATE_EPOCH="$(date +%s)"
 
 chmod +x ./kernel_device_modules-6.6/build.sh
 ./kernel_device_modules-6.6/build.sh
