@@ -43,8 +43,17 @@ cd "${ROOT_DIR}/kernel"
 # ---------------------------------------------------------------
 ln -sfn ../kernel-6.6 kernel-6.6
 ln -sfn build/kernel/kleaf/bazel.WORKSPACE WORKSPACE
-ln -sfn ../../build/kernel/kleaf/bazel.sh tools/bazel
+ln -sfn ../build/kernel/kleaf/bazel.sh tools/bazel
 chmod +x build/kernel/kleaf/bazel.sh
+
+# چک سلامت سیم‌لینک‌ها - اگه یکی خراب باشه همینجا با پیغام واضح متوقف می‌شیم
+for link in kernel-6.6 WORKSPACE tools/bazel; do
+  if [ ! -e "$link" ]; then
+    echo "خطا: سیم‌لینک $link خرابه یا به مسیر اشتباه اشاره می‌کنه." >&2
+    ls -la "$link" >&2
+    exit 1
+  fi
+done
 
 # ---------------------------------------------------------------
 # ۳) خنثی کردن چک نسخه‌ی گیت (سورس export‌شده گیت واقعی نداره،
