@@ -1,57 +1,47 @@
-name: Build boot.image
-
+name: Build Samsung A34 Kernel
 on:
   push:
-  pull_request:
+    branches: [ "a346E-Test" ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # 1. Checkout repository with submodules (shallow clone)
-      - name: Checkout repository
-        uses: actions/checkout@v5
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
         with:
-          submodules: true
-          fetch-depth: 1
+          ref: a346E-Test
+          submodules: 'recursive'
+          lfs: true
 
-      - name: Cleanup space
-        run: |
-          sudo apt-get remove --purge -y "php*" "dotnet*" "mysql*" "nodejs*" "clang*" "google*"
-          sudo apt-get autoremove -y
-          sudo apt-get clean
-          sudo rm -rf /usr/local
-
-      # 2. Run your custom bash script
-      - name: Run build script
-        run: |
-          chmod +x ./build_kernel.sh
-          bash build_kernel.sh
-
-      - name: Copy kernel image
-        run: |
-          cp out/target/product/a34x/obj/KLEAF_OBJ/dist/kernel_device_modules-6.6/mgk_64_k66_kernel_aarch64.user/Image Image
-
-      - name: Move out directory
-        run: |
-          mv out/target/product/a34x/obj/KLEAF_OBJ/dist .
-
-      # 3. Upload the generated boot.img and generated dist dir
-      - name: Upload boot.img artifact
-        uses: actions/upload-artifact@v5
+      - name: Checkout AnyKernel3
+        uses: actions/checkout@v4
         with:
-          name: boot-image
-          path: boot.img
+          repository: lemniskett/AnyKernel3
+          path: zipper
 
-      - name: Upload dist artifact
-        uses: actions/upload-artifact@v5
-        with:
-          name: dist-dir
-          path: dist
+      - name: Fix Prebuilts Path for Bazel
+        run: |
+          mkdir -p kernel/prebuilts/build-tools/path/linux-x86
+          # لینک کردن تمام ابزارهای سیستم برای جلوگیری از ارورهای بعدی Bazel
+          ln -sf /usr/bin/* kernel/prebuilts/build-tools/path/linux-x86/
+          ln -sf $(which python3) kernel/prebuilts/build-tools/path/linux-x86/python
 
-      - name: Upload Image artifact
-        uses: actions/upload-artifact@v5
+      - name: Android Kernel Build
+        uses: lemniskett/android-kernel-actions@master
+        id: build
+        env:
+          NAME: Kernel_A346E
+          KERNEL_PATH: kernel/kernel_device_modules-6.6
         with:
-          name: kernel-image
-          path: Image
+          arch: arm64
+          compiler: clang/15/binutils
+          defconfig: a34x_defconfig
+          image: Image.gz
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: A346E-Kernel-ZIP
+          path: ${{ steps.build.outputs.outfile }}
