@@ -63,15 +63,9 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/module.h>
 
-#ifdef CONFIG_RKP
-#include <linux/rkp.h>
-#ifdef CONFIG_UH_PKVM
-extern bool rkp_started;
-extern u64 early_module_core_text[RKP_EARLY_MODULE];
-extern u64 early_module_core_size[RKP_EARLY_MODULE];
-int rkp_mod_cnt;
-#endif
-#endif
+#undef CREATE_TRACE_POINTS
+#include <trace/hooks/module.h>
+
 /*
  * Mutex protects:
  * 1) List of modules (also safely readable with preempt_disable),
@@ -711,17 +705,16 @@ SYSCALL_DEFINE2(delete_module, const char __user *, name_user,
 	struct module *mod;
 	char name[MODULE_NAME_LEN];
 	char buf[MODULE_FLAGS_BUF_SIZE];
-	int ret, forced = 0;
-#ifdef CONFIG_RKP
-	struct module_info rkp_mod_info;
-#endif
+	int ret, len, forced = 0;
 
 	if (!capable(CAP_SYS_MODULE) || modules_disabled)
 		return -EPERM;
 
-	if (strncpy_from_user(name, name_user, MODULE_NAME_LEN-1) < 0)
-		return -EFAULT;
-	name[MODULE_NAME_LEN-1] = '\0';
+	len = strncpy_from_user(name, name_user, MODULE_NAME_LEN);
+	if (len == 0 || len == MODULE_NAME_LEN)
+		return -ENOENT;
+	if (len < 0)
+		return len;
 
 	audit_log_kern_module(name);
 
@@ -777,17 +770,6 @@ SYSCALL_DEFINE2(delete_module, const char __user *, name_user,
 	strscpy(last_unloaded_module.name, mod->name, sizeof(last_unloaded_module.name));
 	strscpy(last_unloaded_module.taints, module_flags(mod, buf, false), sizeof(last_unloaded_module.taints));
 
-#ifdef CONFIG_RKP
-	rkp_mod_info.base_va = 0;
-	rkp_mod_info.vm_size = 0;
-	rkp_mod_info.core_base_va = (u64)mod->mem[MOD_TEXT].base;
-	rkp_mod_info.core_text_size = (u64)mod->mem[MOD_TEXT].size;
-	rkp_mod_info.core_ro_size = (u64)mod->mem[MOD_RODATA].size;
-	rkp_mod_info.init_base_va = 0;
-	rkp_mod_info.init_text_size = 0;
-
-	uh_call(UH_APP_RKP, RKP_MODULE_LOAD, RKP_MODULE_PXN_SET, (u64)&rkp_mod_info, 0, 0);
-#endif
 	free_module(mod);
 	/* someone could wait for the module in add_unformed_module() */
 	wake_up_all(&module_wq);
@@ -1265,6 +1247,7 @@ static void module_memory_free(void *ptr, enum mod_mem_type type)
 
 static void free_mod_mem(struct module *mod)
 {
+	trace_android_vh_free_mod_mem(mod);
 	for_each_mod_mem_type(type) {
 		struct module_memory *mod_mem = &mod->mem[type];
 
@@ -1304,7 +1287,7 @@ static void free_module(struct module *mod)
 	module_unload_free(mod);
 
 	/* Free any allocated parameters. */
-	destroy_params(mod->kp, mod->num_kp);
+	module_destroy_params(mod->kp, mod->num_kp);
 
 	if (is_livepatch_module(mod))
 		free_module_elf(mod);
@@ -1481,6 +1464,13 @@ static int simplify_symbols(struct module *mod, const struct load_info *info)
 			break;
 
 		default:
+			if (sym[i].st_shndx >= info->hdr->e_shnum) {
+				pr_err("%s: Symbol %s has an invalid section index %u (max %u)\n",
+				       mod->name, name, sym[i].st_shndx, info->hdr->e_shnum - 1);
+				ret = -ENOEXEC;
+				break;
+			}
+
 			/* Divert to percpu allocation if a percpu var. */
 			if (sym[i].st_shndx == info->index.pcpu)
 				secbase = (unsigned long)mod_percpu(mod);
@@ -2101,12 +2091,14 @@ static void module_augment_kernel_taints(struct module *mod, struct load_info *i
 	}
 #ifdef CONFIG_MODULE_SIG
 	mod->sig_ok = info->sig_ok;
+#ifndef CONFIG_MODULE_SIG_PROTECT
 	if (!mod->sig_ok) {
 		pr_notice_once("%s: module verification failed: signature "
 			       "and/or required key missing - tainting "
 			       "kernel\n", mod->name);
 		add_taint_module(mod, TAINT_UNSIGNED_MODULE, LOCKDEP_STILL_OK);
 	}
+#endif
 #else
 	mod->sig_ok = 0;
 #endif
@@ -2293,14 +2285,7 @@ static int move_module(struct module *mod, struct load_info *info)
 			continue;
 		}
 		mod->mem[type].size = PAGE_ALIGN(mod->mem[type].size);
-#ifdef CONFIG_RKP
-		if (type == MOD_TEXT && mod->mem[MOD_TEXT].size != 0)
-			ptr = module_alloc_by_rkp(mod->mem[MOD_TEXT].size, mod->mem[MOD_TEXT].size);
-		else
-			ptr = module_memory_alloc(mod->mem[type].size, type);
-#else
 		ptr = module_memory_alloc(mod->mem[type].size, type);
-#endif
 		/*
                  * The pointer to these blocks of memory are stored on the module
                  * structure and we keep that around so long as the module is
@@ -2575,9 +2560,6 @@ static noinline int do_init_module(struct module *mod)
 {
 	int ret = 0;
 	struct mod_initfree *freeinit;
-#ifdef CONFIG_RKP
-	struct module_info rkp_mod_info;
-#endif
 #if defined(CONFIG_MODULE_STATS)
 	unsigned int text_size = 0, total_size = 0;
 
@@ -2645,19 +2627,9 @@ static noinline int do_init_module(struct module *mod)
 	rcu_assign_pointer(mod->kallsyms, &mod->core_kallsyms);
 #endif
 	module_enable_ro(mod, true);
+	trace_android_vh_set_mod_perm_after_init(mod);
 	mod_tree_remove_init(mod);
 	module_arch_freeing_init(mod);
-#ifdef CONFIG_RKP
-	rkp_mod_info.base_va = 0;
-	rkp_mod_info.vm_size = 0;
-	rkp_mod_info.core_base_va = 0;
-	rkp_mod_info.core_text_size = 0;
-	rkp_mod_info.core_ro_size = 0;
-	rkp_mod_info.init_base_va = (u64)mod->mem[MOD_INIT_TEXT].base;
-	rkp_mod_info.init_text_size = (u64)mod->mem[MOD_INIT_TEXT].size;
-
-	uh_call(UH_APP_RKP, RKP_MODULE_LOAD, RKP_MODULE_PXN_SET, (u64)&rkp_mod_info, 0, 0);
-#endif
 	for_class_mod_mem_type(type, init) {
 		mod->mem[type].base = NULL;
 		mod->mem[type].size = 0;
@@ -2704,17 +2676,6 @@ fail:
 				     MODULE_STATE_GOING, mod);
 	klp_module_going(mod);
 	ftrace_release_mod(mod);
-#ifdef CONFIG_RKP
-	rkp_mod_info.base_va = 0;
-	rkp_mod_info.vm_size = 0;
-	rkp_mod_info.core_base_va = (u64)mod->mem[MOD_TEXT].base;
-	rkp_mod_info.core_text_size = (u64)mod->mem[MOD_TEXT].size;
-	rkp_mod_info.core_ro_size = (u64)mod->mem[MOD_RODATA].size;
-	rkp_mod_info.init_base_va = (u64)mod->mem[MOD_INIT_TEXT].base;
-	rkp_mod_info.init_text_size = (u64)mod->mem[MOD_INIT_TEXT].size;
-
-	uh_call(UH_APP_RKP, RKP_MODULE_LOAD, RKP_MODULE_PXN_SET, (u64)&rkp_mod_info, 0, 0);
-#endif
 	free_module(mod);
 	wake_up_all(&module_wq);
 
@@ -2819,9 +2780,6 @@ out:
 static int complete_formation(struct module *mod, struct load_info *info)
 {
 	int err;
-#ifdef CONFIG_RKP
-	struct module_info rkp_mod_info;
-#endif
 
 	mutex_lock(&module_mutex);
 
@@ -2837,32 +2795,13 @@ static int complete_formation(struct module *mod, struct load_info *info)
 	module_enable_ro(mod, false);
 	module_enable_nx(mod);
 	module_enable_x(mod);
+	trace_android_vh_set_mod_perm_before_init(mod);
 
 	/*
 	 * Mark state as coming so strong_try_module_get() ignores us,
 	 * but kallsyms etc. can see us.
 	 */
 	mod->state = MODULE_STATE_COMING;
-#ifdef CONFIG_RKP
-	rkp_mod_info.base_va = 0;
-	rkp_mod_info.vm_size = 0;
-	rkp_mod_info.core_base_va = (u64)mod->mem[MOD_TEXT].base;
-	rkp_mod_info.core_text_size = (u64)mod->mem[MOD_TEXT].size;
-	rkp_mod_info.core_ro_size = (u64)mod->mem[MOD_RODATA].size;
-	rkp_mod_info.init_base_va = (u64)mod->mem[MOD_INIT_TEXT].base;
-	rkp_mod_info.init_text_size = (u64)mod->mem[MOD_INIT_TEXT].size;
-
-#ifdef CONFIG_UH_PKVM
-	if (!rkp_started) {
-		if (rkp_mod_cnt >= RKP_EARLY_MODULE)
-			BUG_ON(rkp_mod_cnt);
-		early_module_core_text[rkp_mod_cnt] = (u64)mod->mem[MOD_TEXT].base;
-		early_module_core_size[rkp_mod_cnt] = (u64)mod->mem[MOD_TEXT].size;
-		rkp_mod_cnt++;
-	}
-#endif
-	uh_call(UH_APP_RKP, RKP_MODULE_LOAD, RKP_MODULE_PXN_CLEAR, (u64)&rkp_mod_info, 0, 0);
-#endif
 	mutex_unlock(&module_mutex);
 
 	return 0;
@@ -2953,9 +2892,6 @@ static int load_module(struct load_info *info, const char __user *uargs,
 	bool module_allocated = false;
 	long err = 0;
 	char *after_dashes;
-#ifdef CONFIG_RKP
-	struct module_info rkp_mod_info;
-#endif
 
 	/*
 	 * Do the signature check (if any) first. All that
@@ -3108,7 +3044,7 @@ static int load_module(struct load_info *info, const char __user *uargs,
 	mod_sysfs_teardown(mod);
  coming_cleanup:
 	mod->state = MODULE_STATE_GOING;
-	destroy_params(mod->kp, mod->num_kp);
+	module_destroy_params(mod->kp, mod->num_kp);
 	blocking_notifier_call_chain(&module_notify_list,
 				     MODULE_STATE_GOING, mod);
 	klp_module_going(mod);
@@ -3118,18 +3054,6 @@ static int load_module(struct load_info *info, const char __user *uargs,
 	mutex_lock(&module_mutex);
 	module_bug_cleanup(mod);
 	mutex_unlock(&module_mutex);
-
-#ifdef CONFIG_RKP
-	rkp_mod_info.base_va = 0;
-	rkp_mod_info.vm_size = 0;
-	rkp_mod_info.core_base_va = (u64)mod->mem[MOD_TEXT].base;
-	rkp_mod_info.core_text_size = (u64)mod->mem[MOD_TEXT].size;
-	rkp_mod_info.core_ro_size = (u64)mod->mem[MOD_RODATA].size;
-	rkp_mod_info.init_base_va = (u64)mod->mem[MOD_INIT_TEXT].base;
-	rkp_mod_info.init_text_size = (u64)mod->mem[MOD_INIT_TEXT].size;
-
-	uh_call(UH_APP_RKP, RKP_MODULE_LOAD, RKP_MODULE_PXN_SET, (u64)&rkp_mod_info, 0, 0);
-#endif
 
  ddebug_cleanup:
 	ftrace_release_mod(mod);

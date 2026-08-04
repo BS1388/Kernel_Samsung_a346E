@@ -4,9 +4,6 @@
       "path": "frameworks/base/packages/PackageInstaller"
     },
     {
-      "path": "frameworks/base/core/java/android/content/pm"
-    },
-    {
       "path": "frameworks/base/services/core/java/com/android/server"
     },
     {
@@ -273,6 +270,50 @@
       "options": [
         {
           "include-filter": "android.util.cts.FloatMathTest"
+        }
+      ]
+    },
+    {
+      "name": "vts_kernel_net_tests"
+    },
+    {
+      "name": "KernelAbilistTest"
+    },
+    {
+      "name": "VtsAidlHalSensorsTargetTest"
+    },
+    {
+      "name": "VtsBootconfigTest"
+    },
+    {
+      "name": "binderDriverInterfaceTest"
+    },
+    {
+      "name": "binderLibTest"
+    },
+    {
+      "name": "binderSafeInterfaceTest"
+    },
+    {
+      "name": "memunreachable_binder_test"
+    },
+    {
+      "name": "VtsHalBluetoothAudioTargetTest"
+    },
+    {
+      "name": "CtsBionicTestCases"
+    },
+    {
+      "name": "CtsLibcoreTestCases"
+    },
+    {
+      "name": "CtsUsbTests"
+    },
+    {
+      "name": "CtsDrmTestCases",
+      "options": [
+        {
+          "exclude-filter": "android.drm.cts.DRMTest#testForwardLockAccess"
         }
       ]
     }

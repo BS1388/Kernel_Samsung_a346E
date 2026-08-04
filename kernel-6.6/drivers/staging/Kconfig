@@ -34,8 +34,6 @@ source "drivers/staging/rtl8192e/Kconfig"
 
 source "drivers/staging/rtl8723bs/Kconfig"
 
-source "drivers/staging/rtl8712/Kconfig"
-
 source "drivers/staging/rts5208/Kconfig"
 
 source "drivers/staging/octeon/Kconfig"
@@ -79,7 +77,5 @@ source "drivers/staging/fieldbus/Kconfig"
 source "drivers/staging/qlge/Kconfig"
 
 source "drivers/staging/vme_user/Kconfig"
-
-source "drivers/staging/samsung/Kconfig"
 
 endif # STAGING

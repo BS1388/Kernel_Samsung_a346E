@@ -24,10 +24,11 @@
 #define NEW_ADDR		((block_t)-1)	/* used as block_t addresses */
 #define COMPRESS_ADDR		((block_t)-2)	/* used as compressed data flag */
 
-#define F2FS_BYTES_TO_BLK(bytes)	((bytes) >> F2FS_BLKSIZE_BITS)
-#define F2FS_BLK_TO_BYTES(blk)		((blk) << F2FS_BLKSIZE_BITS)
+#define F2FS_BLKSIZE_MASK		(F2FS_BLKSIZE - 1)
+#define F2FS_BYTES_TO_BLK(bytes)	((unsigned long long)(bytes) >> F2FS_BLKSIZE_BITS)
+#define F2FS_BLK_TO_BYTES(blk)		((unsigned long long)(blk) << F2FS_BLKSIZE_BITS)
 #define F2FS_BLK_END_BYTES(blk)		(F2FS_BLK_TO_BYTES(blk + 1) - 1)
-#define F2FS_BLK_ALIGN(x)			(F2FS_BYTES_TO_BLK((x) + F2FS_BLKSIZE - 1))
+#define F2FS_BLK_ALIGN(x)		(F2FS_BYTES_TO_BLK((x) + F2FS_BLKSIZE - 1))
 
 /* 0, 1(node nid), 2(meta nid) are reserved node id */
 #define F2FS_RESERVED_NODE_NUM		3
@@ -77,6 +78,7 @@ enum stop_cp_reason {
 	STOP_CP_REASON_UPDATE_INODE,
 	STOP_CP_REASON_FLUSH_FAIL,
 	STOP_CP_REASON_NO_SEGMENT,
+	STOP_CP_REASON_CORRUPTED_NID,
 	STOP_CP_REASON_MAX,
 };
 
@@ -151,9 +153,7 @@ struct f2fs_super_block {
 	__le16  s_encoding_flags;	/* Filename charset encoding flags */
 	__u8 s_stop_reason[MAX_STOP_REASON];	/* stop checkpoint reason */
 	__u8 s_errors[MAX_F2FS_ERRORS];		/* reason of image corrupts */
-	__u8 reserved[190];		/* valid reserved region */
-	__le32 sec_reserved_blocks;		/* save sec reserved block in sb */
-	__u8 mount_opts[64];	/* default mount option for SEC */
+	__u8 reserved[258];		/* valid reserved region */
 	__le32 crc;			/* checksum of superblock */
 } __packed;
 
@@ -601,19 +601,5 @@ struct f2fs_dentry_block {
 } __packed;
 
 #define	F2FS_DEF_PROJID		0	/* default project ID */
-
-#define	F2FS_SEC_EXTRA_FSCK_MAGIC	0xF5CE45EC
-struct f2fs_sb_extra_flag_blk {
-	__le32 need_fsck;
-	__le32 spo_counter;
-	__le64 fsck_read_bytes;
-	__le64 fsck_written_bytes;
-	__le64 fsck_elapsed_time;
-	__le32 fsck_exit_code;
-	__le32 valid_node_count;
-	__le32 valid_inode_count;
-	__le32 ddp_stats[8];
-	__u8   rsvd[4020];
-} __packed;
 
 #endif  /* _LINUX_F2FS_FS_H */

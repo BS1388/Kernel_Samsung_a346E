@@ -210,16 +210,8 @@ static int selinux_lsm_notifier_avc_callback(u32 event)
 static void cred_init_security(void)
 {
 	struct task_security_struct *tsec;
-#ifdef CONFIG_KDP
-	struct cred *cred = (struct cred *) current->real_cred;
 
-	tsec = &init_sec;
-	tsec->bp_cred = cred;
-	// is not support 5.4 upper version, so we added
-	cred->security = tsec;
-#else
 	tsec = selinux_cred(unrcu_pointer(current->real_cred));
-#endif
 	tsec->osid = tsec->sid = SECINITSID_KERNEL;
 }
 
@@ -470,7 +462,10 @@ static int selinux_is_genfs_special_handling(struct super_block *sb)
 		!strcmp(sb->s_type->name, "rootfs") ||
 		(selinux_policycap_cgroupseclabel() &&
 		 (!strcmp(sb->s_type->name, "cgroup") ||
-		  !strcmp(sb->s_type->name, "cgroup2")));
+		  !strcmp(sb->s_type->name, "cgroup2"))) ||
+		// Android: remove functionfs policycap check due to
+		// ABI breakage with policycap array.
+		!strcmp(sb->s_type->name, "functionfs");
 }
 
 static int selinux_is_sblabel_mnt(struct super_block *sb)
@@ -735,7 +730,10 @@ static int selinux_set_mnt_opts(struct super_block *sb,
 	    !strcmp(sb->s_type->name, "binder") ||
 	    !strcmp(sb->s_type->name, "bpf") ||
 	    !strcmp(sb->s_type->name, "pstore") ||
-	    !strcmp(sb->s_type->name, "securityfs"))
+	    !strcmp(sb->s_type->name, "securityfs") ||
+	    // Android: remove functionfs policycap check due to
+	    // ABI breakage with policycap array.
+	    !strcmp(sb->s_type->name, "functionfs"))
 		sbsec->flags |= SE_SBGENFS;
 
 	if (!strcmp(sb->s_type->name, "sysfs") ||
@@ -2911,7 +2909,7 @@ static int selinux_inode_init_security(struct inode *inode, struct inode *dir,
 {
 	const struct task_security_struct *tsec = selinux_cred(current_cred());
 	struct superblock_security_struct *sbsec;
-	struct xattr *xattr = lsm_get_xattr_slot(xattrs, xattr_count);
+	struct xattr *xattr;
 	u32 newsid, clen;
 	int rc;
 	char *context;
@@ -2938,6 +2936,7 @@ static int selinux_inode_init_security(struct inode *inode, struct inode *dir,
 	    !(sbsec->flags & SBLABEL_MNT))
 		return -EOPNOTSUPP;
 
+	xattr = lsm_get_xattr_slot(xattrs, xattr_count);
 	if (xattr) {
 		rc = security_sid_to_context_force(newsid,
 						   &context, &clen);
@@ -7007,11 +7006,7 @@ static int selinux_uring_cmd(struct io_uring_cmd *ioucmd)
  *
  * Please follow block comment delimiters in the list to keep this order.
  */
-#ifdef CONFIG_KDP
-static struct security_hook_list selinux_hooks[] __ro_after_init_kdp = {
-#else
 static struct security_hook_list selinux_hooks[] __ro_after_init = {
-#endif
 	LSM_HOOK_INIT(binder_set_context_mgr, selinux_binder_set_context_mgr),
 	LSM_HOOK_INIT(binder_transaction, selinux_binder_transaction),
 	LSM_HOOK_INIT(binder_transfer_binder, selinux_binder_transfer_binder),

@@ -20,12 +20,14 @@
 #include <linux/mmc/card.h>
 #include <linux/mmc/mmc.h>
 #include <linux/mmc/sd.h>
+#include <trace/hooks/mmc.h>
 
 #include "core.h"
 #include "card.h"
 #include "host.h"
 #include "bus.h"
 #include "mmc_ops.h"
+#include "quirks.h"
 #include "sd.h"
 #include "sd_ops.h"
 
@@ -618,6 +620,29 @@ static int sd_set_current_limit(struct mmc_card *card, u8 *status)
 }
 
 /*
+ * Determine if the card should tune or not.
+ */
+static bool mmc_sd_use_tuning(struct mmc_card *card)
+{
+	/*
+	 * SPI mode doesn't define CMD19 and tuning is only valid for SDR50 and
+	 * SDR104 mode SD-cards. Note that tuning is mandatory for SDR104.
+	 */
+	if (mmc_host_is_spi(card->host))
+		return false;
+
+	switch (card->host->ios.timing) {
+	case MMC_TIMING_UHS_SDR50:
+	case MMC_TIMING_UHS_SDR104:
+		return true;
+	case MMC_TIMING_UHS_DDR50:
+		return !mmc_card_no_uhs_ddr50_tuning(card);
+	}
+
+	return false;
+}
+
+/*
  * UHS-I specific initialization procedure
  */
 static int mmc_sd_init_uhs_card(struct mmc_card *card)
@@ -660,14 +685,7 @@ static int mmc_sd_init_uhs_card(struct mmc_card *card)
 	if (err)
 		goto out;
 
-	/*
-	 * SPI mode doesn't define CMD19 and tuning is only valid for SDR50 and
-	 * SDR104 mode SD-cards. Note that tuning is mandatory for SDR104.
-	 */
-	if (!mmc_host_is_spi(card->host) &&
-		(card->host->ios.timing == MMC_TIMING_UHS_SDR50 ||
-		 card->host->ios.timing == MMC_TIMING_UHS_DDR50 ||
-		 card->host->ios.timing == MMC_TIMING_UHS_SDR104)) {
+	if (mmc_sd_use_tuning(card)) {
 		err = mmc_execute_tuning(card);
 
 		/*
@@ -1117,7 +1135,7 @@ static int sd_parse_ext_reg_power(struct mmc_card *card, u8 fno, u8 page,
 	card->ext_power.rev = reg_buf[0] & 0xf;
 
 	/* Power Off Notification support at bit 4. */
-	if (reg_buf[1] & BIT(4))
+	if ((reg_buf[1] & BIT(4)) && !mmc_card_broken_sd_poweroff_notify(card))
 		card->ext_power.feature_support |= SD_EXT_POWER_OFF_NOTIFY;
 
 	/* Power Sustenance support at bit 5. */
@@ -1410,7 +1428,6 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 	bool v18_fixup_failed = false;
 
 	WARN_ON(!host->claimed);
-	host->unused = 0;
 retry:
 	err = mmc_sd_get_cid(host, ocr, cid, &rocr);
 	if (err)
@@ -1475,6 +1492,9 @@ retry:
 		if (err)
 			goto free_card;
 	}
+
+	/* Apply quirks prior to card setup */
+	mmc_fixup_device(card, mmc_sd_fixups);
 
 	err = mmc_sd_setup_card(host, card, oldcard != NULL);
 	if (err)
@@ -1753,8 +1773,6 @@ static int _mmc_sd_resume(struct mmc_host *host)
 
 	mmc_power_up(host, host->card->ocr);
 	err = mmc_sd_init_card(host, host->card->ocr, host->card);
-	if (err)
-		host->unused = 1;
 	mmc_card_clr_suspended(host->card);
 
 out:
@@ -1806,12 +1824,8 @@ static int mmc_sd_runtime_resume(struct mmc_host *host)
 
 static int mmc_sd_hw_reset(struct mmc_host *host)
 {
-	int err;
 	mmc_power_cycle(host, host->card->ocr);
-	err = mmc_sd_init_card(host, host->card->ocr, host->card);
-	if (err)
-		host->unused = 1;
-	return err;
+	return mmc_sd_init_card(host, host->card->ocr, host->card);
 }
 
 static const struct mmc_bus_ops mmc_sd_ops = {
@@ -1897,11 +1911,7 @@ err:
 
 	pr_err("%s: error %d whilst initialising SD card\n",
 		mmc_hostname(host), err);
-	ST_LOG("%s: error %d whilst initialising SD card\n",
-		mmc_hostname(host), err);
-
-	if (err)
-		host->unused = 1;
+	trace_android_vh_mmc_attach_sd(host, err);
 
 	return err;
 }

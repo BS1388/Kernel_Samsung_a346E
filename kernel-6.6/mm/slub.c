@@ -48,14 +48,6 @@
 
 #include "internal.h"
 
-#ifdef CONFIG_RKP
-#include <linux/rkp.h>
-#endif
-
-#ifdef CONFIG_KDP
-#include <linux/kdp.h>
-#endif
-
 /*
  * Lock order:
  *   1. slab_mutex (Global Mutex)
@@ -442,13 +434,6 @@ static inline void set_freepointer(struct kmem_cache *s, void *object, void *fp)
 #endif
 
 	freeptr_addr = (unsigned long)kasan_reset_tag((void *)freeptr_addr);
-#ifdef CONFIG_KDP
-	if (kdp_enable && is_kdp_kmem_cache(s)) {
-		u64 new_freelist_ptr_encode = (u64)(freelist_ptr_encode(s, fp, freeptr_addr).v);
-		if (new_freelist_ptr_encode != *(u64 *)freeptr_addr)
-			kdp_set_freeptr((u64)object, (u64)s->offset, (u64)fp, new_freelist_ptr_encode);
-	} else
-#endif
 	*(freeptr_t *)freeptr_addr = freelist_ptr_encode(s, fp, freeptr_addr);
 }
 
@@ -659,8 +644,24 @@ static bool slab_add_kunit_errors(void)
 	kunit_put_resource(resource);
 	return true;
 }
+
+static bool slab_in_kunit_test(void)
+{
+	struct kunit_resource *resource;
+
+	if (!kunit_get_current_test())
+		return false;
+
+	resource = kunit_find_named_resource(current->kunit_test, "slab_errors");
+	if (!resource)
+		return false;
+
+	kunit_put_resource(resource);
+	return true;
+}
 #else
 static inline bool slab_add_kunit_errors(void) { return false; }
+static inline bool slab_in_kunit_test(void) { return false; }
 #endif
 
 static inline unsigned int size_from_object(struct kmem_cache *s)
@@ -806,19 +807,19 @@ unsigned long get_each_object_track(struct kmem_cache *s,
 EXPORT_SYMBOL_NS_GPL(get_each_object_track, MINIDUMP);
 
 #ifdef CONFIG_STACKDEPOT
-static noinline depot_stack_handle_t set_track_prepare(void)
+static noinline depot_stack_handle_t set_track_prepare(gfp_t gfp_flags)
 {
 	depot_stack_handle_t handle;
 	unsigned long entries[TRACK_ADDRS_COUNT];
 	unsigned int nr_entries;
 
 	nr_entries = stack_trace_save(entries, ARRAY_SIZE(entries), 3);
-	handle = stack_depot_save(entries, nr_entries, GFP_NOWAIT);
+	handle = stack_depot_save(entries, nr_entries, gfp_flags);
 
 	return handle;
 }
 #else
-static inline depot_stack_handle_t set_track_prepare(void)
+static inline depot_stack_handle_t set_track_prepare(gfp_t gfp_flags)
 {
 	return 0;
 }
@@ -829,11 +830,6 @@ static void set_track_update(struct kmem_cache *s, void *object,
 			     depot_stack_handle_t handle)
 {
 	struct track *p = get_track(s, object, alloc);
-
-#ifdef CONFIG_KDP
-	if (is_kdp_kmem_cache(s))
-		return;
-#endif
 
 #ifdef CONFIG_STACKDEPOT
 	p->handle = handle;
@@ -846,9 +842,9 @@ static void set_track_update(struct kmem_cache *s, void *object,
 }
 
 static __always_inline void set_track(struct kmem_cache *s, void *object,
-				      enum track_item alloc, unsigned long addr)
+				      enum track_item alloc, unsigned long addr, gfp_t gfp_flags)
 {
-	depot_stack_handle_t handle = set_track_prepare();
+	depot_stack_handle_t handle = set_track_prepare(gfp_flags);
 
 	set_track_update(s, object, alloc, addr, handle);
 }
@@ -950,22 +946,31 @@ void skip_orig_size_check(struct kmem_cache *s, const void *object)
 	set_orig_size(s, (void *)object, s->object_size);
 }
 
-static void slab_bug(struct kmem_cache *s, char *fmt, ...)
+static void __slab_bug(struct kmem_cache *s, const char *fmt, va_list argsp)
 {
 	struct va_format vaf;
 	va_list args;
 
-	va_start(args, fmt);
+	va_copy(args, argsp);
 	vaf.fmt = fmt;
 	vaf.va = &args;
 	pr_err("=============================================================================\n");
-	pr_err("BUG %s (%s): %pV\n", s->name, print_tainted(), &vaf);
+	pr_err("BUG %s (%s): %pV\n", s ? s->name : "<unknown>", print_tainted(), &vaf);
 	pr_err("-----------------------------------------------------------------------------\n\n");
 	va_end(args);
 }
 
+static void slab_bug(struct kmem_cache *s, const char *fmt, ...)
+{
+	va_list args;
+
+	va_start(args, fmt);
+	__slab_bug(s, fmt, args);
+	va_end(args);
+}
+
 __printf(2, 3)
-static void slab_fix(struct kmem_cache *s, char *fmt, ...)
+static void slab_fix(struct kmem_cache *s, const char *fmt, ...)
 {
 	struct va_format vaf;
 	va_list args;
@@ -1018,19 +1023,24 @@ static void print_trailer(struct kmem_cache *s, struct slab *slab, u8 *p)
 		/* Beginning of the filler is the free pointer */
 		print_section(KERN_ERR, "Padding  ", p + off,
 			      size_from_object(s) - off);
-
-	dump_stack();
 }
 
 static void object_err(struct kmem_cache *s, struct slab *slab,
-			u8 *object, char *reason)
+			u8 *object, const char *reason)
 {
 	if (slab_add_kunit_errors())
 		return;
 
 	slab_bug(s, "%s", reason);
-	print_trailer(s, slab, object);
+	if (!object || !check_valid_pointer(s, slab, object)) {
+		print_slab_info(slab);
+		pr_err("Invalid pointer 0x%p\n", object);
+	} else {
+		print_trailer(s, slab, object);
+	}
 	add_taint(TAINT_BAD_PAGE, LOCKDEP_NOW_UNRELIABLE);
+
+	WARN_ON(1);
 }
 
 static bool freelist_corrupted(struct kmem_cache *s, struct slab *slab,
@@ -1047,33 +1057,36 @@ static bool freelist_corrupted(struct kmem_cache *s, struct slab *slab,
 	return false;
 }
 
+static void __slab_err(struct slab *slab)
+{
+	if (slab_in_kunit_test())
+		return;
+
+	print_slab_info(slab);
+	add_taint(TAINT_BAD_PAGE, LOCKDEP_NOW_UNRELIABLE);
+
+	WARN_ON(1);
+}
+
 static __printf(3, 4) void slab_err(struct kmem_cache *s, struct slab *slab,
 			const char *fmt, ...)
 {
 	va_list args;
-	char buf[100];
 
 	if (slab_add_kunit_errors())
 		return;
 
 	va_start(args, fmt);
-	vsnprintf(buf, sizeof(buf), fmt, args);
+	__slab_bug(s, fmt, args);
 	va_end(args);
-	slab_bug(s, "%s", buf);
-	print_slab_info(slab);
-	dump_stack();
-	add_taint(TAINT_BAD_PAGE, LOCKDEP_NOW_UNRELIABLE);
+
+	__slab_err(slab);
 }
 
 static void init_object(struct kmem_cache *s, void *object, u8 val)
 {
 	u8 *p = kasan_reset_tag(object);
 	unsigned int poison_size = s->object_size;
-
-#ifdef CONFIG_KDP
-	if (is_kdp_kmem_cache(s))
-		return;
-#endif
 
 	if (s->flags & SLAB_RED_ZONE) {
 		memset(p - s->red_left_pad, val, s->red_left_pad);
@@ -1097,7 +1110,7 @@ static void init_object(struct kmem_cache *s, void *object, u8 val)
 		memset(p + poison_size, val, s->inuse - poison_size);
 }
 
-static void restore_bytes(struct kmem_cache *s, char *message, u8 data,
+static void restore_bytes(struct kmem_cache *s, const char *message, u8 data,
 						void *from, void *to)
 {
 	slab_fix(s, "Restoring %s 0x%p-0x%p=0x%x", message, from, to - 1, data);
@@ -1105,17 +1118,12 @@ static void restore_bytes(struct kmem_cache *s, char *message, u8 data,
 }
 
 static int check_bytes_and_report(struct kmem_cache *s, struct slab *slab,
-			u8 *object, char *what,
-			u8 *start, unsigned int value, unsigned int bytes)
+				  u8 *object, const char *what, u8 *start, unsigned int value,
+				  unsigned int bytes, bool slab_obj_print)
 {
 	u8 *fault;
 	u8 *end;
 	u8 *addr = slab_address(slab);
-
-#ifdef CONFIG_KDP
-	if (is_kdp_kmem_cache(s))
-		return 1;
-#endif
 
 	metadata_access_enable();
 	fault = memchr_inv(kasan_reset_tag(start), value, bytes);
@@ -1130,12 +1138,11 @@ static int check_bytes_and_report(struct kmem_cache *s, struct slab *slab,
 	if (slab_add_kunit_errors())
 		goto skip_bug_print;
 
-	slab_bug(s, "%s overwritten", what);
-	pr_err("0x%p-0x%p @offset=%tu. First byte 0x%x instead of 0x%x\n",
-					fault, end - 1, fault - addr,
-					fault[0], value);
-	print_trailer(s, slab, object);
-	add_taint(TAINT_BAD_PAGE, LOCKDEP_NOW_UNRELIABLE);
+	pr_err("[%s overwritten] 0x%p-0x%p @offset=%tu. First byte 0x%x instead of 0x%x\n",
+	       what, fault, end - 1, fault - addr, fault[0], value);
+
+	if (slab_obj_print)
+		object_err(s, slab, object, "Object corrupt");
 
 skip_bug_print:
 	restore_bytes(s, what, value, fault, end);
@@ -1199,7 +1206,7 @@ static int check_pad_bytes(struct kmem_cache *s, struct slab *slab, u8 *p)
 		return 1;
 
 	return check_bytes_and_report(s, slab, p, "Object padding",
-			p + off, POISON_INUSE, size_from_object(s) - off);
+			p + off, POISON_INUSE, size_from_object(s) - off, true);
 }
 
 /* Check the pad bytes at the end of a slab page */
@@ -1214,11 +1221,6 @@ static void slab_pad_check(struct kmem_cache *s, struct slab *slab)
 
 	if (!(s->flags & SLAB_POISON))
 		return;
-
-#ifdef CONFIG_KDP
-	if (is_kdp_kmem_cache(s))
-		return;
-#endif
 
 	start = slab_address(slab);
 	length = slab_size(slab);
@@ -1236,9 +1238,10 @@ static void slab_pad_check(struct kmem_cache *s, struct slab *slab)
 	while (end > fault && end[-1] == POISON_INUSE)
 		end--;
 
-	slab_err(s, slab, "Padding overwritten. 0x%p-0x%p @offset=%tu",
-			fault, end - 1, fault - start);
+	slab_bug(s, "Padding overwritten. 0x%p-0x%p @offset=%tu",
+		 fault, end - 1, fault - start);
 	print_section(KERN_ERR, "Padding ", pad, remainder);
+	__slab_err(slab);
 
 	restore_bytes(s, "slab padding", POISON_INUSE, fault, end);
 }
@@ -1249,15 +1252,16 @@ static int check_object(struct kmem_cache *s, struct slab *slab,
 	u8 *p = object;
 	u8 *endobject = object + s->object_size;
 	unsigned int orig_size;
+	int ret = 1;
 
 	if (s->flags & SLAB_RED_ZONE) {
 		if (!check_bytes_and_report(s, slab, object, "Left Redzone",
-			object - s->red_left_pad, val, s->red_left_pad))
-			return 0;
+			object - s->red_left_pad, val, s->red_left_pad, ret))
+			ret = 0;
 
 		if (!check_bytes_and_report(s, slab, object, "Right Redzone",
-			endobject, val, s->inuse - s->object_size))
-			return 0;
+			endobject, val, s->inuse - s->object_size, ret))
+			ret = 0;
 
 		if (slub_debug_orig_size(s) && val == SLUB_RED_ACTIVE) {
 			orig_size = get_orig_size(s, object);
@@ -1265,40 +1269,39 @@ static int check_object(struct kmem_cache *s, struct slab *slab,
 			if (s->object_size > orig_size  &&
 				!check_bytes_and_report(s, slab, object,
 					"kmalloc Redzone", p + orig_size,
-					val, s->object_size - orig_size)) {
-				return 0;
+					val, s->object_size - orig_size, ret)) {
+				ret = 0;
 			}
 		}
 	} else {
 		if ((s->flags & SLAB_POISON) && s->object_size < s->inuse) {
-			check_bytes_and_report(s, slab, p, "Alignment padding",
+			if (!check_bytes_and_report(s, slab, p, "Alignment padding",
 				endobject, POISON_INUSE,
-				s->inuse - s->object_size);
+				s->inuse - s->object_size, ret))
+				ret = 0;
 		}
 	}
 
 	if (s->flags & SLAB_POISON) {
 		if (val != SLUB_RED_ACTIVE && (s->flags & __OBJECT_POISON) &&
 			(!check_bytes_and_report(s, slab, p, "Poison", p,
-					POISON_FREE, s->object_size - 1) ||
+					POISON_FREE, s->object_size - 1, ret) ||
 			 !check_bytes_and_report(s, slab, p, "End Poison",
-				p + s->object_size - 1, POISON_END, 1)))
-			return 0;
+				p + s->object_size - 1, POISON_END, 1, ret)))
+			ret = 0;
 		/*
 		 * check_pad_bytes cleans up on its own.
 		 */
-		check_pad_bytes(s, slab, p);
+		if (!check_pad_bytes(s, slab, p))
+			ret = 0;
 	}
 
-	if (!freeptr_outside_object(s) && val == SLUB_RED_ACTIVE)
-		/*
-		 * Object and freepointer overlap. Cannot check
-		 * freepointer while object is allocated.
-		 */
-		return 1;
-
-	/* Check free pointer validity */
-	if (!check_valid_pointer(s, slab, get_freepointer(s, p))) {
+	/*
+	 * Cannot check freepointer while object is allocated if
+	 * object and freepointer overlap.
+	 */
+	if ((freeptr_outside_object(s) || val != SLUB_RED_ACTIVE) &&
+	    !check_valid_pointer(s, slab, get_freepointer(s, p))) {
 		object_err(s, slab, p, "Freepointer corrupt");
 		/*
 		 * No choice but to zap it and thus lose the remainder
@@ -1306,9 +1309,10 @@ static int check_object(struct kmem_cache *s, struct slab *slab,
 		 * another error because the object count is now wrong.
 		 */
 		set_freepointer(s, p, NULL);
-		return 0;
+		ret = 0;
 	}
-	return 1;
+
+	return ret;
 }
 
 static int check_slab(struct kmem_cache *s, struct slab *slab)
@@ -1319,12 +1323,6 @@ static int check_slab(struct kmem_cache *s, struct slab *slab)
 		slab_err(s, slab, "Not a valid slab page");
 		return 0;
 	}
-
-#ifdef CONFIG_KDP
-	/* Skip this function for now */
-	if (is_kdp_kmem_cache(s))
-		return 1;
-#endif
 
 	maxobj = order_objects(slab_order(slab), s->size);
 	if (slab->objects > maxobj) {
@@ -1337,6 +1335,11 @@ static int check_slab(struct kmem_cache *s, struct slab *slab)
 			slab->inuse, slab->objects);
 		return 0;
 	}
+	if (slab->frozen) {
+		slab_err(s, slab, "Slab disabled since SLUB metadata consistency check failed");
+		return 0;
+	}
+
 	/* Slab_pad_check fixes things up after itself */
 	slab_pad_check(s, slab);
 	return 1;
@@ -1354,12 +1357,6 @@ static int on_freelist(struct kmem_cache *s, struct slab *slab, void *search)
 	int max_objects;
 
 	fp = slab->freelist;
-
-#ifdef CONFIG_KDP
-	if (is_kdp_kmem_cache(s))
-		return 0;
-#endif
-
 	while (fp && nr <= slab->objects) {
 		if (fp == search)
 			return 1;
@@ -1425,10 +1422,6 @@ static void trace(struct kmem_cache *s, struct slab *slab, void *object,
 static void add_full(struct kmem_cache *s,
 	struct kmem_cache_node *n, struct slab *slab)
 {
-#ifdef CONFIG_KDP
-	if (is_kdp_kmem_cache(s))
-		return;
-#endif
 	if (!(s->flags & SLAB_STORE_USER))
 		return;
 
@@ -1438,10 +1431,6 @@ static void add_full(struct kmem_cache *s,
 
 static void remove_full(struct kmem_cache *s, struct kmem_cache_node *n, struct slab *slab)
 {
-#ifdef CONFIG_KDP
-	if (is_kdp_kmem_cache(s))
-		return;
-#endif
 	if (!(s->flags & SLAB_STORE_USER))
 		return;
 
@@ -1501,10 +1490,6 @@ void setup_slab_debug(struct kmem_cache *s, struct slab *slab, void *addr)
 static inline int alloc_consistency_checks(struct kmem_cache *s,
 					struct slab *slab, void *object)
 {
-#ifdef CONFIG_KDP
-	if (is_kdp_kmem_cache(s))
-		return 0;
-#endif
 	if (!check_slab(s, slab))
 		return 0;
 
@@ -1543,6 +1528,7 @@ bad:
 		slab_fix(s, "Marking all objects used");
 		slab->inuse = slab->objects;
 		slab->freelist = NULL;
+		slab->frozen = 1; /* mark consistency-failed slab as frozen */
 	}
 	return false;
 }
@@ -1568,12 +1554,12 @@ static inline int free_consistency_checks(struct kmem_cache *s,
 			slab_err(s, slab, "Attempt to free object(0x%p) outside of slab",
 				 object);
 		} else if (!slab->slab_cache) {
-			pr_err("SLUB <none>: no slab for object 0x%p.\n",
-			       object);
-			dump_stack();
-		} else
+			slab_err(NULL, slab, "No slab cache for object 0x%p",
+				 object);
+		} else {
 			object_err(s, slab, object,
-					"page slab pointer corrupt.");
+				   "page slab pointer corrupt.");
+		}
 		return 0;
 	}
 	return 1;
@@ -1746,11 +1732,6 @@ slab_flags_t kmem_cache_flags(unsigned int object_size,
 	slab_flags_t block_flags;
 	slab_flags_t slub_debug_local = slub_debug;
 
-#ifdef CONFIG_KDP
-	if (is_kdp_kmem_cache_name(name))
-		return flags;
-#endif
-
 	if (flags & SLAB_NO_USER_FLAGS)
 		return flags;
 
@@ -1812,9 +1793,9 @@ static inline bool free_debug_processing(struct kmem_cache *s,
 static inline void slab_pad_check(struct kmem_cache *s, struct slab *slab) {}
 static inline int check_object(struct kmem_cache *s, struct slab *slab,
 			void *object, u8 val) { return 1; }
-static inline depot_stack_handle_t set_track_prepare(void) { return 0; }
+static inline depot_stack_handle_t set_track_prepare(gfp_t gfp_flags) { return 0; }
 static inline void set_track(struct kmem_cache *s, void *object,
-			     enum track_item alloc, unsigned long addr) {}
+			     enum track_item alloc, unsigned long addr, gfp_t gfp_flags) {}
 static inline void add_full(struct kmem_cache *s, struct kmem_cache_node *n,
 					struct slab *slab) {}
 static inline void remove_full(struct kmem_cache *s, struct kmem_cache_node *n,
@@ -1944,63 +1925,6 @@ static void *setup_object(struct kmem_cache *s, void *object)
 /*
  * Slab allocation and freeing
  */
-#if defined(CONFIG_KDP) && defined(CONFIG_RKP)
-static inline struct slab *alloc_kdp_slab_page(struct kmem_cache *s, gfp_t flags, int node,
-		struct kmem_cache_order_objects oo)
-{
-	struct folio *folio;
-	struct slab *slab;
-	unsigned int order = oo_order(oo);
-
-	if (is_kdp_kmem_cache(s)) {
-		void *virt_folio = rkp_ro_alloc();
-		if (!virt_folio)
-			goto def_alloc;
-
-		folio = virt_to_folio(virt_folio);
-	} else {
-def_alloc:
-		if (node == NUMA_NO_NODE)
-			folio = (struct folio *)alloc_pages(flags, order);
-		else
-			folio = (struct folio *)__alloc_pages_node(node, flags, order);
-	}
-
-	if (!folio)
-		return NULL;
-
-	slab = folio_slab(folio);
-	__folio_set_slab(folio);
-	/* Make the flag visible before any changes to folio->mapping */
-	smp_wmb();
-	if (folio_is_pfmemalloc(folio))
-		slab_set_pfmemalloc(slab);
-
-	trace_android_vh_slab_folio_alloced(order, flags);
-
-	/*
-	 * We modify the following so that slab alloc for protected data
-	 * types are allocated from our own pool.
-	 */
-	if (s->name) {
-		u64 sc, va_page, type;
-		//struct page *page = slab_page(slab);
-
-		type = get_kdp_kmem_cache_type(s->name);
-		va_page = (u64)__va(page_to_phys(folio_page(folio, 0)));
-
-		if (type) {
-			for (sc = 0; sc < (1 << oo_order(oo)); sc++) {
-				kdp_set_slab_ro(va_page, type);
-				va_page += PAGE_SIZE;
-			}
-		}
-	}
-
-	return slab;
-}
-#endif
-
 static inline struct slab *alloc_slab_page(gfp_t flags, int node,
 		struct kmem_cache_order_objects oo)
 {
@@ -2157,24 +2081,7 @@ static struct slab *allocate_slab(struct kmem_cache *s, gfp_t flags, int node)
 	alloc_gfp = (flags | __GFP_NOWARN | __GFP_NORETRY) & ~__GFP_NOFAIL;
 	if ((alloc_gfp & __GFP_DIRECT_RECLAIM) && oo_order(oo) > oo_order(s->min))
 		alloc_gfp = (alloc_gfp | __GFP_NOMEMALLOC) & ~__GFP_RECLAIM;
-#ifdef CONFIG_KDP
-	if (is_kdp_kmem_cache(s))
-		oo = s->min;
 
-	slab = alloc_kdp_slab_page(s, alloc_gfp, node, oo);
-	if (unlikely(!slab)) {
-		oo = s->min;
-		alloc_gfp = flags;
-		/*
-		 * Allocation may have failed due to fragmentation.
-		 * Try a lower order alloc if possible
-		 */
-		slab = alloc_kdp_slab_page(s, alloc_gfp, node, oo);
-		if (unlikely(!slab))
-			return NULL;
-		stat(s, ORDER_FALLBACK);
-	}
-#else
 	slab = alloc_slab_page(alloc_gfp, node, oo);
 	if (unlikely(!slab)) {
 		oo = s->min;
@@ -2188,7 +2095,6 @@ static struct slab *allocate_slab(struct kmem_cache *s, gfp_t flags, int node)
 			return NULL;
 		stat(s, ORDER_FALLBACK);
 	}
-#endif
 
 	slab->objects = oo_objects(oo);
 	slab->inuse = 0;
@@ -2233,31 +2139,6 @@ static struct slab *new_slab(struct kmem_cache *s, gfp_t flags, int node)
 		flags & (GFP_RECLAIM_MASK | GFP_CONSTRAINT_MASK), node);
 }
 
-#ifdef CONFIG_KDP
-static void free_ro_pages(struct kmem_cache *s, struct page *page, int order)
-{
-	unsigned long long sc, va_page;
-
-	sc = 0;
-	va_page = (unsigned long long)__va(page_to_phys(page));
-#ifdef CONFIG_RKP
-	if (is_rkp_ro_buffer(va_page)) {
-		for (sc = 0; sc < (1 << order); sc++) {
-			kdp_pgd_rwx(va_page);
-			rkp_ro_free((void *)va_page);
-			va_page += PAGE_SIZE;
-		}
-		return;
-	}
-#endif
-	for (sc = 0; sc < (1 << order); sc++) {
-		kdp_pgd_rwx(va_page);
-		va_page += PAGE_SIZE;
-	}
-	__free_pages(page, order);
-}
-#endif
-
 static void __free_slab(struct kmem_cache *s, struct slab *slab)
 {
 	struct folio *folio = slab_folio(slab);
@@ -2270,14 +2151,6 @@ static void __free_slab(struct kmem_cache *s, struct slab *slab)
 	smp_wmb();
 	__folio_clear_slab(folio);
 	mm_account_reclaimed_pages(pages);
-#ifdef CONFIG_KDP
-	/* We free the protected pages here. */
-	if (is_kdp_kmem_cache(s)) {
-		unaccount_slab(slab, order, s);
-		free_ro_pages(s, &folio->page, order);
-		return;
-	}
-#endif
 	unaccount_slab(slab, order, s);
 	__free_pages(&folio->page, order);
 }
@@ -2357,7 +2230,8 @@ static void *alloc_single_from_partial(struct kmem_cache *s,
 	slab->inuse++;
 
 	if (!alloc_debug_processing(s, slab, object, orig_size)) {
-		remove_partial(n, slab);
+		if (folio_test_slab(slab_folio(slab)))
+			remove_partial(n, slab);
 		return NULL;
 	}
 
@@ -3107,12 +2981,6 @@ static inline bool free_debug_processing(struct kmem_cache *s,
 	void *object = head;
 	int cnt = 0;
 
-
-#ifdef CONFIG_KDP
-	if (is_kdp_kmem_cache(s))
-		return false;
-#endif
-
 	if (s->flags & SLAB_CONSISTENCY_CHECKS) {
 		if (!check_slab(s, slab))
 			goto out;
@@ -3417,8 +3285,26 @@ new_objects:
 	pc.slab = &slab;
 	pc.orig_size = orig_size;
 	freelist = get_partial(s, node, &pc);
-	if (freelist)
-		goto check_new_slab;
+	if (freelist) {
+		if (kmem_cache_debug(s)) {
+			/*
+			 * For debug caches here we had to go through
+			 * alloc_single_from_partial() so just store the
+			 * tracking info and return the object.
+			 *
+			 * Due to disabled preemption we need to disallow
+			 * blocking. The flags are further adjusted by
+			 * gfp_nested_mask() in stack_depot itself.
+			 */
+			if (s->flags & SLAB_STORE_USER)
+				set_track(s, freelist, TRACK_ALLOC, addr,
+					  gfpflags & ~(__GFP_DIRECT_RECLAIM));
+
+			return freelist;
+		}
+
+		goto retry_load_slab;
+	}
 
 	slub_put_cpu_ptr(s->cpu_slab);
 	slab = new_slab(s, gfpflags, node);
@@ -3438,7 +3324,8 @@ new_objects:
 			goto new_objects;
 
 		if (s->flags & SLAB_STORE_USER)
-			set_track(s, freelist, TRACK_ALLOC, addr);
+			set_track(s, freelist, TRACK_ALLOC, addr,
+				  gfpflags & ~(__GFP_DIRECT_RECLAIM));
 
 		return freelist;
 	}
@@ -3453,20 +3340,6 @@ new_objects:
 	slab->frozen = 1;
 
 	inc_slabs_node(s, slab_nid(slab), slab->objects);
-
-check_new_slab:
-
-	if (kmem_cache_debug(s)) {
-		/*
-		 * For debug caches here we had to go through
-		 * alloc_single_from_partial() so just store the tracking info
-		 * and return the object
-		 */
-		if (s->flags & SLAB_STORE_USER)
-			set_track(s, freelist, TRACK_ALLOC, addr);
-
-		return freelist;
-	}
 
 	if (unlikely(!pfmemalloc_match(slab, gfpflags))) {
 		/*
@@ -3742,8 +3615,12 @@ static noinline void free_to_partial_list(
 	unsigned long flags;
 	depot_stack_handle_t handle = 0;
 
+	/*
+	 * We cannot use GFP_NOWAIT as there are callsites where waking up
+	 * kswapd could deadlock
+	 */
 	if (s->flags & SLAB_STORE_USER)
-		handle = set_track_prepare();
+		handle = set_track_prepare(__GFP_NOWARN);
 
 	spin_lock_irqsave(&n->list_lock, flags);
 
@@ -4771,19 +4648,14 @@ error:
 	return -EINVAL;
 }
 
-static void list_slab_objects(struct kmem_cache *s, struct slab *slab,
-			      const char *text)
+static void list_slab_objects(struct kmem_cache *s, struct slab *slab)
 {
 #ifdef CONFIG_SLUB_DEBUG
 	void *addr = slab_address(slab);
 	void *p;
 
-#ifdef CONFIG_KDP
-	if (is_kdp_kmem_cache(s))
-		return;
-#endif
-
-	slab_err(s, slab, text, s->name);
+	if (!slab_add_kunit_errors())
+		slab_bug(s, "Objects remaining on __kmem_cache_shutdown()");
 
 	spin_lock(&object_map_lock);
 	__fill_map(object_map, s, slab);
@@ -4796,6 +4668,8 @@ static void list_slab_objects(struct kmem_cache *s, struct slab *slab,
 		}
 	}
 	spin_unlock(&object_map_lock);
+
+	__slab_err(slab);
 #endif
 }
 
@@ -4816,8 +4690,7 @@ static void free_partial(struct kmem_cache *s, struct kmem_cache_node *n)
 			remove_partial(n, slab);
 			list_add(&slab->slab_list, &discard);
 		} else {
-			list_slab_objects(s, slab,
-			  "Objects remaining in %s on __kmem_cache_shutdown()");
+			list_slab_objects(s, slab);
 		}
 	}
 	spin_unlock_irq(&n->list_lock);
@@ -5222,10 +5095,8 @@ static struct kmem_cache * __init bootstrap(struct kmem_cache *static_cache)
 			p->slab_cache = s;
 
 #ifdef CONFIG_SLUB_DEBUG
-#ifndef CONFIG_KDP
 		list_for_each_entry(p, &n->full, slab_list)
 			p->slab_cache = s;
-#endif
 #endif
 	}
 	list_add(&s->list, &slab_caches);
@@ -5361,11 +5232,6 @@ static void validate_slab(struct kmem_cache *s, struct slab *slab,
 {
 	void *p;
 	void *addr = slab_address(slab);
-
-#ifdef CONFIG_KDP
-	if (is_kdp_kmem_cache(s))
-		return;
-#endif
 
 	if (!check_slab(s, slab) || !on_freelist(s, slab, NULL))
 		return;
@@ -5594,11 +5460,6 @@ static void process_slab(struct loc_track *t, struct kmem_cache *s,
 	void *addr = slab_address(slab);
 	bool is_alloc = (alloc == TRACK_ALLOC);
 	void *p;
-
-#ifdef CONFIG_KDP
-	if (is_kdp_kmem_cache(s))
-		return;
-#endif
 
 	__fill_map(obj_map, s, slab);
 

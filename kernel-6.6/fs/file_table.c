@@ -28,7 +28,6 @@
 #include <linux/task_work.h>
 #include <linux/ima.h>
 #include <linux/swap.h>
-#include <linux/task_integrity.h>
 #include <linux/kmemleak.h>
 
 #include <linux/atomic.h>
@@ -134,7 +133,7 @@ static struct ctl_table fs_stat_sysctls[] = {
 		.data		= &sysctl_nr_open,
 		.maxlen		= sizeof(unsigned int),
 		.mode		= 0644,
-		.proc_handler	= proc_dointvec_minmax,
+		.proc_handler	= proc_douintvec_minmax,
 		.extra1		= &sysctl_nr_open_min,
 		.extra2		= &sysctl_nr_open_max,
 	},
@@ -377,7 +376,6 @@ static void __fput(struct file *file)
 	locks_remove_file(file);
 
 	ima_file_free(file);
-	five_file_free(file);
 	if (unlikely(file->f_flags & FASYNC)) {
 		if (file->f_op->fasync)
 			file->f_op->fasync(-1, file, 0);

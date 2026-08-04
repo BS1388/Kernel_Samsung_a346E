@@ -1043,8 +1043,10 @@ static int mmc_blk_reset(struct mmc_blk_data *md, struct mmc_host *host,
 	 * in that case.
 	 */
 	main_md->part_curr = err ? MMC_BLK_PART_INVALID : main_md->part_type;
-	if (err)
+	if (err) {
+		trace_android_vh_mmc_blk_reset(host, err);
 		return err;
+	}
 	/* Ensure we switch back to the correct partition */
 	if (mmc_blk_part_switch(host->card, md->part_type))
 		/*
@@ -1944,8 +1946,7 @@ static void mmc_blk_mq_rw_recovery(struct mmc_queue *mq, struct request *req)
 	}
 
 	if (rq_data_dir(req) == READ && brq->data.blocks >
-			queue_physical_block_size(mq->queue) >> 9 &&
-			!mmc_card_sd(card)) {
+			queue_physical_block_size(mq->queue) >> 9) {
 		/* Read one (native) sector at a time */
 		mmc_blk_read_single(mq, req);
 		return;
@@ -2566,9 +2567,6 @@ static struct mmc_blk_data *mmc_blk_alloc_req(struct mmc_card *card,
 	pr_info("%s: %s %s %s%s\n",
 		md->disk->disk_name, mmc_card_id(card), mmc_card_name(card),
 		cap_str, md->read_only ? " (ro)" : "");
-	ST_LOG("%s: %s %s %s %s\n",
-		md->disk->disk_name, mmc_card_id(card), mmc_card_name(card),
-		cap_str, md->read_only ? "(ro)" : "");
 
 	/* used in ->open, must be set before add_disk: */
 	if (area_type == MMC_BLK_DATA_AREA_MAIN)

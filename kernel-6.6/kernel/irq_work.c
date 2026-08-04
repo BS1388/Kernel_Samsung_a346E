@@ -23,9 +23,6 @@
 #include <linux/kasan.h>
 
 #include <trace/events/ipi.h>
-#if IS_ENABLED(CONFIG_MTK_IRQ_MONITOR_DEBUG)
-#include <linux/sched/clock.h>
-#endif
 
 static DEFINE_PER_CPU(struct llist_head, raised_list);
 static DEFINE_PER_CPU(struct llist_head, lazy_list);
@@ -206,9 +203,6 @@ void irq_work_single(void *arg)
 {
 	struct irq_work *work = arg;
 	int flags;
-#if IS_ENABLED(CONFIG_MTK_IRQ_MONITOR_DEBUG)
-	u64 start, end, process_time;
-#endif
 
 	/*
 	 * Clear the PENDING bit, after this point the @work can be re-used.
@@ -223,19 +217,11 @@ void irq_work_single(void *arg)
 	 * See irq_work_claim().
 	 */
 	smp_mb();
-#if IS_ENABLED(CONFIG_MTK_IRQ_MONITOR_DEBUG)
-	start = sched_clock();
-#endif
+
 	lockdep_irq_work_enter(flags);
 	work->func(work);
 	lockdep_irq_work_exit(flags);
-#if IS_ENABLED(CONFIG_MTK_IRQ_MONITOR_DEBUG)
-	end = sched_clock();
-	process_time = end - start;
-	if (process_time > 5000000L) // > 5ms
-		pr_notice("irq_monitor: function: %pS time: %lld func: %s line: %d "
-			, work->func, process_time, __func__, __LINE__);
-#endif
+
 	/*
 	 * Clear the BUSY bit, if set, and return to the free state if no-one
 	 * else claimed it meanwhile.
@@ -307,6 +293,12 @@ void irq_work_sync(struct irq_work *work)
 	    !arch_irq_work_has_interrupt()) {
 		rcuwait_wait_event(&work->irqwait, !irq_work_is_busy(work),
 				   TASK_UNINTERRUPTIBLE);
+		/*
+		 * Ensure irq_work_single() does not access @work
+		 * after removing IRQ_WORK_BUSY. It is always
+		 * accessed within a RCU-read section.
+		 */
+		synchronize_rcu();
 		return;
 	}
 
@@ -317,6 +309,7 @@ EXPORT_SYMBOL_GPL(irq_work_sync);
 
 static void run_irq_workd(unsigned int cpu)
 {
+	guard(rcu)();
 	irq_work_run_list(this_cpu_ptr(&lazy_list));
 }
 

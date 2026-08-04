@@ -16,6 +16,7 @@
 #include <linux/export.h>
 #include <linux/syscalls.h>
 #include <linux/pagemap.h>
+#include <linux/page_size_compat.h>
 #include <linux/splice.h>
 #include <linux/compat.h>
 #include <linux/mount.h>
@@ -24,10 +25,6 @@
 
 #include <linux/uaccess.h>
 #include <asm/unistd.h>
-
-#ifdef CONFIG_SECURITY_DEFEX
-#include <linux/defex.h>
-#endif
 
 const struct file_operations generic_ro_fops = {
 	.llseek		= generic_file_llseek,
@@ -579,10 +576,6 @@ ssize_t vfs_write(struct file *file, const char __user *buf, size_t count, loff_
 	ret = rw_verify_area(WRITE, file, pos, count);
 	if (ret)
 		return ret;
-#ifdef CONFIG_SECURITY_DEFEX
-	if (task_defex_enforce(current, file, -__NR_write))
-		return -EPERM;
-#endif
 	if (count > MAX_RW_COUNT)
 		count =  MAX_RW_COUNT;
 	file_start_write(file);
@@ -669,6 +662,17 @@ ssize_t ksys_pread64(unsigned int fd, char __user *buf, size_t count,
 	f = fdget(fd);
 	if (f.file) {
 		ret = -ESPIPE;
+
+		/*
+		 * If userspace thinks the pages are larger than they actually are,
+		 * adjust the offset and count to compensate.
+		 *
+		 * NOTE: We only need to adjust the position here since pagemap_read()
+		 * handles updating the count.
+		 */
+		if (__is_emulated_pagemap_file(f.file))
+			pos *= __PAGE_SIZE / PAGE_SIZE;
+
 		if (f.file->f_mode & FMODE_PREAD)
 			ret = vfs_read(f.file, buf, count, &pos);
 		fdput(f);

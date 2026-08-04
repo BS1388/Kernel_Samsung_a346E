@@ -35,10 +35,6 @@
 
 #include "decode-insn.h"
 
-#ifdef CONFIG_RKP
-#include <linux/rkp.h>
-#endif
-
 DEFINE_PER_CPU(struct kprobe *, current_kprobe) = NULL;
 DEFINE_PER_CPU(struct kprobe_ctlblk, kprobe_ctlblk);
 
@@ -135,13 +131,15 @@ int __kprobes arch_prepare_kprobe(struct kprobe *p)
 
 void *alloc_insn_page(void)
 {
-	void *p = __vmalloc_node_range(PAGE_SIZE, 1, VMALLOC_START, VMALLOC_END,
+	void *addr;
+
+	addr = __vmalloc_node_range(PAGE_SIZE, 1, VMALLOC_START, VMALLOC_END,
 			GFP_KERNEL, PAGE_KERNEL_ROX, VM_FLUSH_RESET_PERMS,
 			NUMA_NO_NODE, __builtin_return_address(0));
-#ifdef CONFIG_RKP
-	uh_call(UH_APP_RKP, RKP_KPROBE_PAGE, (u64)p, PAGE_SIZE, 0, 0);
-#endif
-	return p;
+	if (!addr)
+		return NULL;
+	set_memory_rox((unsigned long)addr, 1);
+	return addr;
 }
 
 /* arm kprobe: install breakpoint in text */

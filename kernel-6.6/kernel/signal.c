@@ -59,13 +59,11 @@
 #include <asm/cacheflush.h>
 #include <asm/syscall.h>	/* for syscall_get_* */
 
-#ifdef CONFIG_SAMSUNG_FREECESS
-#include <linux/freecess.h>
-#endif
-
 #undef CREATE_TRACE_POINTS
 #include <trace/hooks/signal.h>
 #include <trace/hooks/dtask.h>
+
+EXPORT_TRACEPOINT_SYMBOL_GPL(signal_generate);
 /*
  * SLAB caches for signal bits.
  */
@@ -436,7 +434,8 @@ __sigqueue_alloc(int sig, struct task_struct *t, gfp_t gfp_flags,
 	 */
 	rcu_read_lock();
 	ucounts = task_ucounts(t);
-	sigpending = inc_rlimit_get_ucounts(ucounts, UCOUNT_RLIMIT_SIGPENDING);
+	sigpending = inc_rlimit_get_ucounts(ucounts, UCOUNT_RLIMIT_SIGPENDING,
+					    override_rlimit);
 	rcu_read_unlock();
 	if (!sigpending)
 		return NULL;
@@ -925,12 +924,7 @@ static bool prepare_signal(int sig, struct task_struct *p, bool force)
 
 	if (signal->flags & SIGNAL_GROUP_EXIT) {
 		if (signal->core_state)
-#if IS_ENABLED(CONFIG_MTK_AVOID_TRUNCATE_COREDUMP)
-		pr_info("[%d:%s] skip sig %d due to coredump\n",
-				p->pid, p->comm, sig);
-#else
 			return sig == SIGKILL;
-#endif
 		/*
 		 * The process is in the middle of dying, drop the signal.
 		 */
@@ -1213,6 +1207,7 @@ out_set:
 	complete_signal(sig, t, type);
 ret:
 	trace_signal_generate(sig, info, t, type != PIDTYPE_PID, result);
+	trace_android_vh_send_signal_locked(result, ret, sig, t, type, info);
 	return ret;
 }
 
@@ -1325,18 +1320,6 @@ int do_send_sig_info(int sig, struct kernel_siginfo *info, struct task_struct *p
 	unsigned long flags;
 	int ret = -ESRCH;
 	trace_android_vh_do_send_sig_info(sig, current, p);
-
-#ifdef CONFIG_SAMSUNG_FREECESS
-	/*
-	 * System will send SIGIO to the app that locked the file when other apps access the file.
-	 * Report SIGIO to prevent other apps from getting stuck
-	 */
-	if ((sig == SIGKILL || sig == SIGTERM || sig == SIGABRT || sig == SIGQUIT || sig == SIGIO)) {
-		/* Report pid if signal is fatal */
-		sig_report(p, sig != SIGIO);
-	}
-#endif
-
 	if (lock_task_sighand(p, &flags)) {
 		ret = send_signal_locked(sig, info, p, type);
 		unlock_task_sighand(p, &flags);
@@ -1344,6 +1327,7 @@ int do_send_sig_info(int sig, struct kernel_siginfo *info, struct task_struct *p
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(do_send_sig_info);
 
 enum sig_handler {
 	HANDLER_CURRENT, /* If reachable use the current handler */
@@ -2033,14 +2017,15 @@ int send_sigqueue(struct sigqueue *q, struct pid *pid, enum pid_type type)
 	 * into t->pending).
 	 *
 	 * Where type is not PIDTYPE_PID, signals must be delivered to the
-	 * process. In this case, prefer to deliver to current if it is in
-	 * the same thread group as the target process, which avoids
-	 * unnecessarily waking up a potentially idle task.
+	 * process. In this case, prefer to deliver to current if it is in the
+	 * same thread group as the target process and its sighand is stable,
+	 * which avoids unnecessarily waking up a potentially idle task.
 	 */
 	t = pid_task(pid, type);
 	if (!t)
 		goto ret;
-	if (type != PIDTYPE_PID && same_thread_group(t, current))
+	if (type != PIDTYPE_PID &&
+	    same_thread_group(t, current) && !current->exit_state)
 		t = current;
 	if (!likely(lock_task_sighand(t, &flags)))
 		goto ret;

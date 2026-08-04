@@ -247,6 +247,7 @@ int __ptep_set_access_flags(struct vm_area_struct *vma,
 		flush_tlb_page(vma, address);
 	return 1;
 }
+EXPORT_SYMBOL(__ptep_set_access_flags);
 
 static bool is_el1_instruction_abort(unsigned long esr)
 {
@@ -401,23 +402,6 @@ static void __do_kernel_fault(unsigned long addr, unsigned long esr,
 	 */
 	if (!is_el1_instruction_abort(esr) && fixup_exception(regs))
 		return;
-
-#if defined(CONFIG_MTK_MTE_DEBUG) && defined(CONFIG_KASAN_HW_TAGS)
-	/*
-	 * Check for false alarms
-	 */
-	if (system_supports_mte() && is_el1_mte_sync_tag_check_fault(esr)) {
-		u8 ptr_tag = arch_kasan_get_tag(addr);
-		u8 mem_tag = arch_get_mem_tag((void *)addr);
-
-		if (mem_tag == 0xF0 || ptr_tag == mem_tag) {
-			pr_info("This is MTE false alarm!\n");
-			pr_info("[MTE] ptr = 0x%lx, ESR = 0x%lx", addr, esr);
-			pr_info("[MTE] ptr_tag = 0x%02x, mem_tag = 0x%02x\n",
-				ptr_tag, mem_tag);
-		}
-	}
-#endif
 
 	if (WARN_RATELIMIT(is_spurious_el1_translation_fault(addr, esr, regs),
 	    "Ignoring spurious kernel translation fault at virtual address %016lx\n", addr))
@@ -803,6 +787,7 @@ static int do_sea(unsigned long far, unsigned long esr, struct pt_regs *regs)
 		 */
 		siaddr  = untagged_addr(far);
 	}
+	add_taint(TAINT_MACHINE_CHECK, LOCKDEP_STILL_OK);
 	trace_android_rvh_do_sea(siaddr, esr, regs);
 	arm64_notify_die(inf->name, regs, inf->sig, inf->code, siaddr, esr);
 

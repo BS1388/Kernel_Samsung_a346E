@@ -28,13 +28,6 @@
 #include <linux/blktrace_api.h>
 
 #include "blk-throttle.h"
-
-#ifdef CONFIG_BLOCK_SUPPORT_STLOG
-#include <linux/fslog.h>
-#else
-#define ST_LOG(fmt, ...)
-#endif
-
 #include "blk.h"
 #include "blk-mq-sched.h"
 #include "blk-rq-qos.h"
@@ -90,7 +83,7 @@ bool set_capacity_and_notify(struct gendisk *disk, sector_t size)
 	    (disk->flags & GENHD_FL_HIDDEN))
 		return false;
 
-	pr_info("%s: detected capacity change from %lld to %lld\n",
+	pr_info_ratelimited("%s: detected capacity change from %lld to %lld\n",
 		disk->disk_name, capacity, size);
 
 	/*
@@ -331,14 +324,6 @@ void disk_uevent(struct gendisk *disk, enum kobject_action action)
 	struct block_device *part;
 	unsigned long idx;
 
-#ifdef CONFIG_BLOCK_SUPPORT_STLOG
-	int major = disk->major;
-	int first_minor = disk->first_minor;
-
-	if (action == KOBJ_ADD)
-		ST_LOG("<%s> KOBJ_ADD %d:%d", __func__, major, first_minor);
-#endif
-
 	rcu_read_lock();
 	xa_for_each(&disk->part_tbl, idx, part) {
 		if (bdev_is_partition(part) && !bdev_nr_sectors(part))
@@ -348,11 +333,6 @@ void disk_uevent(struct gendisk *disk, enum kobject_action action)
 
 		rcu_read_unlock();
 		kobject_uevent(bdev_kobj(part), action);
-		if (action == KOBJ_ADD) {
-			ST_LOG("<%s> KOBJ_ADD %d:%d", __func__, major,
-					first_minor + part->bd_partno);
-		}
-
 		put_device(&part->bd_device);
 		rcu_read_lock();
 	}
@@ -654,9 +634,6 @@ void del_gendisk(struct gendisk *disk)
 	struct block_device *part;
 	unsigned long idx;
 
-#ifdef CONFIG_BLOCK_SUPPORT_STLOG
-	struct device *dev;
-#endif
 	might_sleep();
 
 	if (WARN_ON_ONCE(!disk_live(disk) && !(disk->flags & GENHD_FL_HIDDEN)))
@@ -708,11 +685,6 @@ void del_gendisk(struct gendisk *disk)
 	disk->part0->bd_stamp = 0;
 	sysfs_remove_link(block_depr, dev_name(disk_to_dev(disk)));
 	pm_runtime_set_memalloc_noio(disk_to_dev(disk), false);
-#ifdef CONFIG_BLOCK_SUPPORT_STLOG
-	dev = disk_to_dev(disk);
-	ST_LOG("<%s> KOBJ_REMOVE %d:%d %s", __func__,
-		MAJOR(dev->devt), MINOR(dev->devt), dev->kobj.name);
-#endif
 	device_del(disk_to_dev(disk));
 
 	blk_mq_freeze_queue_wait(q);
@@ -738,13 +710,10 @@ void del_gendisk(struct gendisk *disk)
 	 * If the disk does not own the queue, allow using passthrough requests
 	 * again.  Else leave the queue frozen to fail all I/O.
 	 */
-	if (!test_bit(GD_OWNS_QUEUE, &disk->state)) {
-		blk_queue_flag_clear(QUEUE_FLAG_INIT_DONE, q);
+	if (!test_bit(GD_OWNS_QUEUE, &disk->state))
 		__blk_mq_unfreeze_queue(q, true);
-	} else {
-		if (queue_is_mq(q))
-			blk_mq_exit_queue(q);
-	}
+	else if (queue_is_mq(q))
+		blk_mq_exit_queue(q);
 }
 EXPORT_SYMBOL(del_gendisk);
 
@@ -794,7 +763,7 @@ static ssize_t disk_badblocks_store(struct device *dev,
 }
 
 #ifdef CONFIG_BLOCK_LEGACY_AUTOLOAD
-void blk_request_module(dev_t devt)
+static bool blk_probe_dev(dev_t devt)
 {
 	unsigned int major = MAJOR(devt);
 	struct blk_major_name **n;
@@ -804,14 +773,26 @@ void blk_request_module(dev_t devt)
 		if ((*n)->major == major && (*n)->probe) {
 			(*n)->probe(devt);
 			mutex_unlock(&major_names_lock);
-			return;
+			return true;
 		}
 	}
 	mutex_unlock(&major_names_lock);
+	return false;
+}
 
-	if (request_module("block-major-%d-%d", MAJOR(devt), MINOR(devt)) > 0)
-		/* Make old-style 2.4 aliases work */
-		request_module("block-major-%d", MAJOR(devt));
+void blk_request_module(dev_t devt)
+{
+	int error;
+
+	if (blk_probe_dev(devt))
+		return;
+
+	error = request_module("block-major-%d-%d", MAJOR(devt), MINOR(devt));
+	/* Make old-style 2.4 aliases work */
+	if (error > 0)
+		error = request_module("block-major-%d", MAJOR(devt));
+	if (!error)
+		blk_probe_dev(devt);
 }
 #endif /* CONFIG_BLOCK_LEGACY_AUTOLOAD */
 
