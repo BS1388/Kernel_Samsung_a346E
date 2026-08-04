@@ -1,1 +1,1 @@
-kernel Samsung a346E
+Kernel Samsung a346E
