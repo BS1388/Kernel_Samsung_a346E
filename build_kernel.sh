@@ -63,13 +63,26 @@ sed -i "s/stable_scmversion_cmd = _get_status_at_path.*/stable_scmversion_cmd = 
 sed -i "s/-maybe-dirty//g" build/kernel/kleaf/impl/stamp.bzl
 
 # ---------------------------------------------------------------
-# ۴) ساخت build.config — دقیقاً طبق build_kernel.sh رسمی خودِ
+# ۴) خاموش کردن module signing
+#    کرنل جدید (بعد از آپدیت kernel-6.6) به‌صورت پیش‌فرض module
+#    signing رو روشن می‌کنه، ولی کلید امضاش (mtk_signing_key.pem)
+#    داخل سندباکس بازل در دسترس نیست و بیلد رو می‌شکنه. چون این یه
+#    بیلد شخصیه (نه پروداکشن)، ساده‌ترین راه خاموش کردنشه.
+# ---------------------------------------------------------------
+cat > kernel_device_modules-6.6/kernel/configs/disable_module_sig.config << 'EOF'
+# CONFIG_MODULE_SIG is not set
+# CONFIG_MODULE_SIG_ALL is not set
+# CONFIG_MODULE_SIG_FORCE is not set
+EOF
+
+# ---------------------------------------------------------------
+# ۵) ساخت build.config — دقیقاً طبق build_kernel.sh رسمی خودِ
 #    سامسونگ برای A346E (بدون sec_ogki_fragment.config چون اون
 #    فایل فقط مال A346B هست و اصلاً تو سورس تو وجود نداره)
 # ---------------------------------------------------------------
 python3 kernel_device_modules-6.6/scripts/gen_build_config.py \
   --kernel-defconfig mediatek-bazel_defconfig \
-  --kernel-defconfig-overlays "mt6877_overlay.config mt6877_teegris_5_overlay.config" \
+  --kernel-defconfig-overlays "mt6877_overlay.config mt6877_teegris_5_overlay.config disable_module_sig.config" \
   --kernel-build-config-overlays "" \
   -m user \
   -o ../out/target/product/a34x/obj/KERNEL_OBJ/build.config
@@ -78,7 +91,7 @@ export DEVICE_MODULES_DIR="kernel_device_modules-6.6"
 export BUILD_CONFIG="../out/target/product/a34x/obj/KERNEL_OBJ/build.config"
 export OUT_DIR="../out/target/product/a34x/obj/KLEAF_OBJ"
 export DIST_DIR="../out/target/product/a34x/obj/KLEAF_OBJ/dist"
-export DEFCONFIG_OVERLAYS="mt6877_overlay.config mt6877_teegris_5_overlay.config"
+export DEFCONFIG_OVERLAYS="mt6877_overlay.config mt6877_teegris_5_overlay.config disable_module_sig.config"
 export PROJECT="mgk_64_k66"
 export MODE="user"
 # اینا رو @mgk_info (یه بازل ریپوی مخصوص سامسونگ) مستقیم از environment می‌خونه
@@ -91,7 +104,7 @@ chmod +x ./kernel_device_modules-6.6/build.sh
 cd "${ROOT_DIR}"
 
 # ---------------------------------------------------------------
-# ۵) خروجی نهایی: فقط فایل Image کرنل
+# ۶) خروجی نهایی: فقط فایل Image کرنل
 # ---------------------------------------------------------------
 cp "out/target/product/a34x/obj/KLEAF_OBJ/dist/kernel_device_modules-6.6/mgk_64_k66_kernel_aarch64.user/Image" "${ROOT_DIR}/Image"
 
