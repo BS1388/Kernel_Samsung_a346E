@@ -1,111 +1,58 @@
 #!/bin/bash
-# ============================================================
-#   بیلد کرنل Samsung Galaxy A34 5G — A346E (A346EXXU9DYF4)
-#
-#   سورس اوپن‌سورس سامسونگ موقع export، سیم‌لینک‌ها/ساب‌ماژول‌ها رو
-#   به‌صورت فایل خالی (۰ بایت) می‌شکنه. این اسکریپت قبل از بیلد
-#   همه‌شون رو درست می‌کنه، بعد بیلد واقعی رو اجرا می‌کنه.
-# ============================================================
-set -e
 
-ROOT_DIR="$(pwd)"
+mkdir bin
+export PATH="$(pwd)/bin:$PATH"
 
-mkdir -p bin
-export PATH="${ROOT_DIR}/bin:$PATH"
+sudo apt-get install curl wget -y
 
-sudo apt-get update -y
-sudo apt-get install -y curl wget unzip python3
-
-# ---------------------------------------------------------------
-# ۱) دریافت prebuilts (کامپایلر clang، ndk، jdk...) که سامسونگ
-#    توی این سورس نداده. با repo sync از منیفست خود AOSP می‌گیریمش.
-# ---------------------------------------------------------------
-curl -s https://storage.googleapis.com/git-repo-downloads/repo > bin/repo
+curl https://storage.googleapis.com/git-repo-downloads/repo > bin/repo
 chmod a+x bin/repo
 
-mkdir -p aosp-kernel && cd aosp-kernel
+mkdir aosp-kernel && cd aosp-kernel
 repo init -u https://android.googlesource.com/kernel/manifest -b common-android15-6.6 --depth=1
-repo sync -c -j"$(nproc --all)"
-cd "${ROOT_DIR}"
+repo sync -j$(nproc --all)
+cd prebuilts/clang/host/linux-x86
+wget -O clang-r536225.tar.gz https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel-2025/clang-r536225.tar.gz
+mkdir clang-r536225; cd clang-r536225
+tar xvzf ../clang-r536225.tar.gz
+rm ../clang-r536225.tar.gz
+cd ..
+cd kleaf
+sed -i '/# keep sorted/a\    "r536225",' versions.bzl
+cat versions.bzl
+cd ..
+cd ../../../../
+ln -s "$(pwd)/prebuilts" "$(pwd)/../kernel/prebuilts"
+cd ..
 
-ln -sfn "${ROOT_DIR}/aosp-kernel/prebuilts" "${ROOT_DIR}/kernel/prebuilts"
+cd kernel
 
-# فال‌بک خودکار: اگه external/zopfli یا external/pigz رو به ریپوی خودت
-# اضافه نکرده باشی (این دوتا تو زیپ دیپندنسی‌های بیزل نبودن)، از aosp-kernel قرض می‌گیریم
-[ -d "${ROOT_DIR}/kernel/external/zopfli" ] || ln -sfn "${ROOT_DIR}/aosp-kernel/external/zopfli" "${ROOT_DIR}/kernel/external/zopfli"
-[ -d "${ROOT_DIR}/kernel/external/pigz" ]   || ln -sfn "${ROOT_DIR}/aosp-kernel/external/pigz"   "${ROOT_DIR}/kernel/external/pigz"
+FTP="
+build/kernel/_setup_env.sh
+build/kernel/kleaf/impl/stamp.bzl
+build/kernel/kleaf/impl/kernel_env.bzl
+"
 
-cd "${ROOT_DIR}/kernel"
-
-# ---------------------------------------------------------------
-# ۲) تعمیر سیم‌لینک‌های شکسته‌ی خود سامسونگ (نکته‌ی اصلی که باعث
-#    فیل شدن بیلد قبلیت شده بود: tools/bazel اصلاً وجود نداشت!)
-# ---------------------------------------------------------------
-ln -sfn ../kernel-6.6 kernel-6.6
-ln -sfn build/bazel_mgk_rules/kleaf/bazel.WORKSPACE WORKSPACE
-ln -sfn ../build/kernel/kleaf/bazel.sh tools/bazel
-chmod +x build/kernel/kleaf/bazel.sh
-
-# چک سلامت سیم‌لینک‌ها - اگه یکی خراب باشه همینجا با پیغام واضح متوقف می‌شیم
-for link in kernel-6.6 WORKSPACE tools/bazel; do
-  if [ ! -e "$link" ]; then
-    echo "خطا: سیم‌لینک $link خرابه یا به مسیر اشتباه اشاره می‌کنه." >&2
-    ls -la "$link" >&2
-    exit 1
-  fi
+for f in $FTP; do
+  sed -i "s/SOURCE_DATE_EPOCH=0/SOURCE_DATE_EPOCH\=\\\"\$\(date \+\%s\)\\\"/g" "$f"
 done
 
-# ---------------------------------------------------------------
-# ۳) خنثی کردن چک نسخه‌ی گیت (سورس export‌شده گیت واقعی نداره،
-#    وگرنه kleaf سعی می‌کنه git status بگیره و ارور می‌ده)
-# ---------------------------------------------------------------
-sed -i "s/stable_scmversion_cmd = _get_status_at_path.*/stable_scmversion_cmd = \"echo ''\"/g" build/kernel/kleaf/impl/stamp.bzl
-sed -i "s/-maybe-dirty//g" build/kernel/kleaf/impl/stamp.bzl
+sed -i "s/-maybe-dirty//g" "build/kernel/kleaf/impl/stamp.bzl"
+sed -i "s/stable_scmversion_cmd = _get_status_at_path.*/stable_scmversion_cmd = \"echo \'\'\"/g" "build/kernel/kleaf/impl/stamp.bzl"
+sed -i 's|SOURCE_DATE_EPOCH=0|SOURCE_DATE_EPOCH=\\"$(date +%s)\\"|' "kernel_device_modules-6.6/scripts/gen_build_config.py"
+sed -i "s/r510928/r536225/" "kernel-6.6/build.config.constants"
 
-# ---------------------------------------------------------------
-# ۴) خاموش کردن module signing
-#    کرنل جدید (بعد از آپدیت kernel-6.6) به‌صورت پیش‌فرض module
-#    signing رو روشن می‌کنه، ولی کلید امضاش (mtk_signing_key.pem)
-#    داخل سندباکس بازل در دسترس نیست و بیلد رو می‌شکنه. چون این یه
-#    بیلد شخصیه (نه پروداکشن)، ساده‌ترین راه خاموش کردنشه.
-# ---------------------------------------------------------------
-cat > kernel_device_modules-6.6/kernel/configs/disable_module_sig.config << 'EOF'
-# CONFIG_MODULE_SIG is not set
-# CONFIG_MODULE_SIG_ALL is not set
-# CONFIG_MODULE_SIG_FORCE is not set
-EOF
-
-# ---------------------------------------------------------------
-# ۵) ساخت build.config — دقیقاً طبق build_kernel.sh رسمی خودِ
-#    سامسونگ برای A346E (بدون sec_ogki_fragment.config چون اون
-#    فایل فقط مال A346B هست و اصلاً تو سورس تو وجود نداره)
-# ---------------------------------------------------------------
-python3 kernel_device_modules-6.6/scripts/gen_build_config.py \
-  --kernel-defconfig mediatek-bazel_defconfig \
-  --kernel-defconfig-overlays "mt6877_overlay.config mt6877_teegris_5_overlay.config disable_module_sig.config" \
-  --kernel-build-config-overlays "" \
-  -m user \
-  -o ../out/target/product/a34x/obj/KERNEL_OBJ/build.config
+python kernel_device_modules-6.6/scripts/gen_build_config.py --kernel-defconfig mediatek-bazel_defconfig --kernel-defconfig-overlays "sec_ogki_fragment.config mt6877_overlay.config mt6877_teegris_5_overlay.config" --kernel-build-config-overlays "" -m user -o ../out/target/product/a34x/obj/KERNEL_OBJ/build.config
 
 export DEVICE_MODULES_DIR="kernel_device_modules-6.6"
 export BUILD_CONFIG="../out/target/product/a34x/obj/KERNEL_OBJ/build.config"
 export OUT_DIR="../out/target/product/a34x/obj/KLEAF_OBJ"
 export DIST_DIR="../out/target/product/a34x/obj/KLEAF_OBJ/dist"
-export DEFCONFIG_OVERLAYS="mt6877_overlay.config mt6877_teegris_5_overlay.config disable_module_sig.config"
+export DEFCONFIG_OVERLAYS="sec_ogki_fragment.config mt6877_overlay.config mt6877_teegris_5_overlay.config"
 export PROJECT="mgk_64_k66"
 export MODE="user"
-# اینا رو @mgk_info (یه بازل ریپوی مخصوص سامسونگ) مستقیم از environment می‌خونه
-export KERNEL_VERSION="kernel-6.6"
 export SOURCE_DATE_EPOCH="$(date +%s)"
+export SEC_BUILDNUMBER="ogkiA346BXXSFEZC7"
 
 chmod +x ./kernel_device_modules-6.6/build.sh
 ./kernel_device_modules-6.6/build.sh
-
-cd "${ROOT_DIR}"
-
-# ---------------------------------------------------------------
-# ۶) خروجی نهایی: فقط فایل Image کرنل
-# ---------------------------------------------------------------
-cp "out/target/product/a34x/obj/KLEAF_OBJ/dist/kernel_device_modules-6.6/mgk_64_k66_kernel_aarch64.user/Image" "${ROOT_DIR}/Image"
-
-echo "تمام! فایل Image تو ${ROOT_DIR}/Image آماده‌ست."
