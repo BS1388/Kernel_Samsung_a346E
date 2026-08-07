@@ -119,7 +119,9 @@
 #define ISOLATED_BITS	5
 #define MAGIC_VAL_BITS	8
 
+##ifndef MAX
 #define MAX(a, b) ((a) >= (b) ? (a) : (b))
+#endif
 
 #define ZS_MAX_PAGES_PER_ZSPAGE	(_AC(CONFIG_ZSMALLOC_CHAIN_SIZE, UL))
 
