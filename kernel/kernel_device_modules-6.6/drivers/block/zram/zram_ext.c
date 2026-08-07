@@ -22,7 +22,7 @@ struct loop_device {
 	loff_t		lo_offset;
 	loff_t		lo_sizelimit;
 	int		lo_flags;
-	char		lo_file_name[LO_NAME_SIZE];
+	char		lo_file_name[64];
 
 	struct file *	lo_backing_file;
 	struct block_device *lo_device;
