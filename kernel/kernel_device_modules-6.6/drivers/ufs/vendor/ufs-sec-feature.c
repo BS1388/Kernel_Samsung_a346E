@@ -1485,8 +1485,8 @@ static void sec_android_vh_ufs_send_uic_command(void *data,
 
 		ufs_sec_features.ucmd_complete = true;
 
-		if (((hba->active_uic_cmd->argument2 & MASK_UIC_COMMAND_RESULT)
-			!= UIC_CMD_RESULT_SUCCESS) || (str_t == UFS_CMD_ERR))
+		if ((hba->active_uic_cmd->argument2 & MASK_UIC_COMMAND_RESULT)
+    != UIC_CMD_RESULT_SUCCESS)
 			ufs_sec_inc_uic_cmd_error(cmd);
 
 		cmd_id = (u8)(cmd & COMMAND_OPCODE_MASK);
