@@ -119,7 +119,7 @@
 #define ISOLATED_BITS	5
 #define MAGIC_VAL_BITS	8
 
-##ifndef MAX
+#ifndef MAX
 #define MAX(a, b) ((a) >= (b) ? (a) : (b))
 #endif
 
