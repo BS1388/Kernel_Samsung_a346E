@@ -35,9 +35,12 @@
 
 #define MAX_BUF_SIZE 1024
 #define LIMIT_RELEASE -1
+#ifndef MIN
 #define MIN(a, b)     (((a) < (b)) ? (a) : (b))
+#endif
+#ifndef MAX
 #define MAX(a, b)     (((a) > (b)) ? (a) : (b))
-
+#endif
 static struct freq_qos_request *max_req[DVFS_MAX_ID];
 static struct freq_qos_request *min_req[DVFS_MAX_ID];
 static struct kobject *cpufreq_kobj;
