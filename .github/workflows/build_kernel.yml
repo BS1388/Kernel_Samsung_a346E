@@ -1,7 +1,6 @@
 name: Build A346E Kernel
 
 on:
-  push:
   workflow_dispatch:
 
 jobs:
