@@ -37,7 +37,10 @@
 #define MIN_LBAT_VOLT 2000
 #define LBAT_PMIC_MAX_LEVEL LOW_BATTERY_LEVEL_3
 #define LBAT_PMIC_LEVEL_NUM (LOW_BATTERY_LEVEL_3+1)
+#include <linux/minmax.h>
+#ifndef MAX
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
+#endif
 #define VOLT_L_STR "thd-volts-l"
 #define VOLT_H_STR "thd-volts-h"
 
