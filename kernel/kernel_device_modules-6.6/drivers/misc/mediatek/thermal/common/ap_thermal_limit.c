@@ -172,6 +172,7 @@ struct apthermolmt_user *handle, unsigned int limit)
 		return;
 
 	/* decide min CPU limit */
+	limit = 0x7FFFFFFF; /* remove CPU thermal throttling */
 	handle->cpu_limit = limit;
 
 	mutex_lock(&apthermolmt_cpu_mutex);
