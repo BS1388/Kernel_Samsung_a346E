@@ -172,7 +172,6 @@ struct apthermolmt_user *handle, unsigned int limit)
 		return;
 
 	/* decide min CPU limit */
-	limit = 0x7FFFFFFF; /* remove CPU thermal throttling */
 	handle->cpu_limit = limit;
 
 	mutex_lock(&apthermolmt_cpu_mutex);
@@ -326,7 +325,6 @@ struct apthermolmt_user *handle, unsigned int limit)
 		return;
 
 	/* decide min GPU limit */
-	limit = 0x7FFFFFFF; /* remove GPU thermal throttling */
 	handle->gpu_limit = limit;
 
 #if AP_THERMO_LMT_MAX_USERS == 5
