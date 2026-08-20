@@ -86,22 +86,3 @@ cd "${ROOT_DIR}"
 cp "out/target/product/a34x/obj/KLEAF_OBJ/dist/kernel_device_modules-6.6/mgk_64_k66_kernel_aarch64.user/Image" "${ROOT_DIR}/Image"
 
 echo "تمام! فایل Image تو ${ROOT_DIR}/Image آماده‌ست."
-
-# ---- فقط اگر روت انتخاب شده باشه، boot.img رو دانلود و ری‌پک می‌کنیم ----
-# KSU_VAR از env سطح workflow میاد (NO-ROOT به‌صورت پیش‌فرض)
-# هشدار: این boot.img پایه از ریلیز a34x عمومیه (Fede2782)، نه لزوماً فریمور a346E.
-# قبل از فلش با Odin حتماً چک کنید نسخه‌ش با فریمور فعلی گوشیتون همخونی داره.
-if [ "${KSU_VAR:-NO-ROOT}" != "NO-ROOT" ]; then
-  echo ">>> KSU_VAR=$KSU_VAR -> در حال ساخت boot.img روت‌شده"
-
-  wget -O boot.img https://github.com/Fede2782/proprietary_vendor_samsung_a34x/releases/latest/download/boot.img
-
-  mkdir -p bootimg && cd bootimg
-  "$MBOOT" unpack ../boot.img
-  cp "${ROOT_DIR}/Image" kernel
-  PATCHVBMETAFLAG=true "$MBOOT" repack ../boot.img out-boot.img
-  mv out-boot.img ../boot.img
-  cd "${ROOT_DIR}"
-else
-  echo ">>> NO-ROOT انتخاب شده — فقط Image ساخته میشه، boot.img ری‌پک نمیشه."
-fi
