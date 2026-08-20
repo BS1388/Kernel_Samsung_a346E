@@ -16,6 +16,17 @@ chmod a+x bin/repo
 mkdir -p aosp-kernel && cd aosp-kernel
 repo init -u https://android.googlesource.com/kernel/manifest -b common-android15-6.6 --depth=1
 repo sync -c -j"$(nproc --all)"
+
+cd prebuilts/clang/host/linux-x86
+wget -O clang-r536225.tar.gz https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel-2025/clang-r536225.tar.gz
+mkdir -p clang-r536225
+cd clang-r536225
+tar xvzf ../clang-r536225.tar.gz
+rm ../clang-r536225.tar.gz
+cd ../kleaf
+sed -i '/# keep sorted/a\    "r536225",' versions.bzl
+cd "${ROOT_DIR}/aosp-kernel"
+
 cd "${ROOT_DIR}"
 
 ln -sfn "${ROOT_DIR}/aosp-kernel/prebuilts" "${ROOT_DIR}/kernel/prebuilts"
@@ -63,6 +74,8 @@ export MODE="user"
 
 export KERNEL_VERSION="kernel-6.6"
 export SOURCE_DATE_EPOCH="$(date +%s)"
+# TODO: این مقدار برای A346B بود، برای گوشی خودتون از Settings > About phone > Software info بگیرید و جایگزین کنید
+export SEC_BUILDNUMBER="ogkiA346EPLACEHOLDER"
 
 chmod +x ./kernel_device_modules-6.6/build.sh
 ./kernel_device_modules-6.6/build.sh
@@ -73,3 +86,22 @@ cd "${ROOT_DIR}"
 cp "out/target/product/a34x/obj/KLEAF_OBJ/dist/kernel_device_modules-6.6/mgk_64_k66_kernel_aarch64.user/Image" "${ROOT_DIR}/Image"
 
 echo "تمام! فایل Image تو ${ROOT_DIR}/Image آماده‌ست."
+
+# ---- فقط اگر روت انتخاب شده باشه، boot.img رو دانلود و ری‌پک می‌کنیم ----
+# KSU_VAR از env سطح workflow میاد (NO-ROOT به‌صورت پیش‌فرض)
+# هشدار: این boot.img پایه از ریلیز a34x عمومیه (Fede2782)، نه لزوماً فریمور a346E.
+# قبل از فلش با Odin حتماً چک کنید نسخه‌ش با فریمور فعلی گوشیتون همخونی داره.
+if [ "${KSU_VAR:-NO-ROOT}" != "NO-ROOT" ]; then
+  echo ">>> KSU_VAR=$KSU_VAR -> در حال ساخت boot.img روت‌شده"
+
+  wget -O boot.img https://github.com/Fede2782/proprietary_vendor_samsung_a34x/releases/latest/download/boot.img
+
+  mkdir -p bootimg && cd bootimg
+  "$MBOOT" unpack ../boot.img
+  cp "${ROOT_DIR}/Image" kernel
+  PATCHVBMETAFLAG=true "$MBOOT" repack ../boot.img out-boot.img
+  mv out-boot.img ../boot.img
+  cd "${ROOT_DIR}"
+else
+  echo ">>> NO-ROOT انتخاب شده — فقط Image ساخته میشه، boot.img ری‌پک نمیشه."
+fi
