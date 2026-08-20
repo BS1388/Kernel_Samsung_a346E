@@ -1,14 +1,14 @@
-name: Build boot.image
+name: Build A346E Kernel
 
 on:
   pull_request:
   workflow_dispatch:
     inputs:
       release:
-          description: '🚀 Make a release?'
-          type: boolean
-          required: true
-          default: false
+        description: '🚀 Make a release?'
+        type: boolean
+        required: true
+        default: false
       telegram:
         description: '📢 Send to Telegram?'
         type: boolean
@@ -22,9 +22,10 @@ on:
           - NO-ROOT
           - KSUN
           - WILD-KSU
-          - WILD-KSU-SUSFS
+          - Wild-KSUN-SUSFS
           - KSU-TIAN
           - KSU-TIAN-SUSFS
+          - SUKISU
           - SUKISU-SUSFS
         default: NO-ROOT
 
@@ -42,6 +43,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 300
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -49,42 +51,42 @@ jobs:
           submodules: true
           fetch-depth: 1
 
-      - name: Cleanup & Setup Bin
+      - name: Free up disk space
         run: |
-          sudo apt-get remove --purge -y "php*" "dotnet*" "mysql*" "nodejs*" "clang*" "google*"
-          sudo apt-get autoremove -y && sudo apt-get clean
-          sudo rm -rf /usr/local
+          sudo apt-get remove --purge -y "php*" "dotnet*" "mysql*" "nodejs*" "clang*" "google*" || true
+          sudo apt-get autoremove -y
+          sudo apt-get clean
+          sudo rm -rf /usr/local /usr/share/dotnet /opt/ghc "$AGENT_TOOLSDIRECTORY"
           mkdir -p ${{ env.G_BIN }}
           mkdir -p ${{ env.G_EXT }}
 
       - name: Clone Other Dependencies
+        if: env.KSU_VAR != 'NO-ROOT'
         working-directory: ${{ env.G_EXT }}
         run: |
           git clone https://github.com/WildKernels/AnyKernel3.git -b "gki-2.0"
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6
-          git clone https://github.com/xnnnsets/kernel_patches.git
+          git clone https://github.com/WildKernels/kernel_patches.git
           git clone https://github.com/xnnnsets/patch.git
           git clone https://github.com/SukiSU-Ultra/SukiSU_patch.git
 
-      - name: Setup Build Environment
+      - name: Setup magiskboot
+        if: env.KSU_VAR != 'NO-ROOT'
         run: |
-          sudo apt-get install curl wget -y
-          curl https://storage.googleapis.com/git-repo-downloads/repo > ${{ env.G_BIN }}/repo
-          chmod a+x ${{ env.G_BIN }}/repo
-          echo "REPO=${{ env.G_BIN }}/repo" >> $GITHUB_ENV
-
           APK_URL="$(curl -s "https://api.github.com/repos/topjohnwu/Magisk/releases/latest" | grep -oE 'https://[^\"]+Magisk-v[0-9.]+\.apk')"
           wget -O "magisk.zip" "$APK_URL"
           unzip "magisk.zip"
           cp "./lib/x86_64/libmagiskboot.so" "${{ env.G_BIN }}/magiskboot"
           chmod +x "${{ env.G_BIN }}/magiskboot"
           echo "MBOOT=${{ env.G_BIN }}/magiskboot" >> $GITHUB_ENV
+          echo "PATH=${{ env.G_BIN }}:$PATH" >> $GITHUB_ENV
 
       - name: Susfs4ksu (Source Copy)
+        if: env.KSU_VAR != 'NO-ROOT'
         run: |
           cd ${{ env.G_EXT }}/susfs4ksu
           case "${{ env.KSU_VAR }}" in
-            "KSU-TIAN-SUSFS"|"SUKISU-SUSFS")
+            "KSU-TIAN-SUSFS"|"SUKISU-SUSFS"|"Wild-KSUN-SUSFS")
               git checkout "gki-android15-6.6"
               cp ./kernel_patches/include/linux/* ${{ env.G_KERNEL }}/include/linux/
               cp ./kernel_patches/fs/* ${{ env.G_KERNEL }}/fs/
@@ -92,18 +94,19 @@ jobs:
           esac
 
       - name: Apply Patch susfs kernel
+        if: env.KSU_VAR != 'NO-ROOT'
         run: |
           cd ${{ env.G_KERNEL }}
           patch -p1 < ${{ env.G_EXT }}/patch/6.6/Dont_reduce_TTL.patch || true
 
           case "${{ env.KSU_VAR }}" in
-            "KSU-TIAN-SUSFS"|"SUKISU-SUSFS")
+            "KSU-TIAN-SUSFS"|"SUKISU-SUSFS"|"Wild-KSUN-SUSFS")
               patch -p1 < ${{ env.G_EXT }}/susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch || true
-              patch -p1 < ${{ env.G_EXT }}/kernel_patches/wild/susfs_fix_patches/v1.5.12/1_fix_base.c.patch || true
               ;;
           esac
 
       - name: Add KernelSU
+        if: env.KSU_VAR != 'NO-ROOT'
         run: |
           cd ${{ env.G_KERNEL }}
           case "${{ env.KSU_VAR }}" in
@@ -115,9 +118,10 @@ jobs:
               curl -LSs "https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh" | bash -s wild
               KSU_DIR="KernelSU"
               ;;
-            "WILD-KSU-SUSFS")
-              curl -LSs "https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh" | bash -s wild-susfs
-              KSU_DIR="KernelSU"
+            "Wild-KSUN-SUSFS")
+              curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
+              KSU_DIR="KernelSU-Next"
+              patch -p1 -d ./KernelSU-Next < ${{ env.G_EXT }}/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
               ;;
             "KSU-TIAN-SUSFS")
               curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
@@ -128,7 +132,7 @@ jobs:
               curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
               KSU_DIR="KernelSU"
               ;;
-            "SUKISU-SUSFS")
+            "SUKISU"|"SUKISU-SUSFS")
               curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
               KSU_DIR="KernelSU"
               ;;
@@ -143,15 +147,16 @@ jobs:
           fi
 
       - name: Configure KernelSU (Defconfig)
+        if: env.KSU_VAR != 'NO-ROOT'
         run: |
           case "${{ env.KSU_VAR }}" in
-            "KSUN"|"WILD-KSU"|"WILD-KSU-SUSFS")
+            "KSUN"|"WILD-KSU"|"Wild-KSUN-SUSFS")
               echo "CONFIG_KSU=y" >> "${{ env.DEFCONFIG }}"
               ;;
             "KSU-TIAN"*)
               echo "CONFIG_KSU=y" >> "${{ env.DEFCONFIG }}"
               ;;
-            "SUKISU-SUSFS")
+            "SUKISU"|"SUKISU-SUSFS")
               echo "CONFIG_KSU=y" >> "${{ env.DEFCONFIG }}"
               echo "CONFIG_KSU_DEBUG=n" >> "${{ env.DEFCONFIG }}"
               echo "CONFIG_KPM=y" >> "${{ env.DEFCONFIG }}"
@@ -160,6 +165,7 @@ jobs:
           esac
 
       - name: Configure IPSet Support
+        if: env.KSU_VAR != 'NO-ROOT'
         run: |
           echo "# IPSet Support" >> "${{ env.DEFCONFIG }}"
           echo "CONFIG_IP_SET=y" >> "${{ env.DEFCONFIG }}"
@@ -182,11 +188,17 @@ jobs:
           echo "CONFIG_IP_SET_LIST_SET=y" >> "${{ env.DEFCONFIG }}"
 
       - name: Configure SUSFS
+        if: env.KSU_VAR != 'NO-ROOT'
         run: |
           case "${{ env.KSU_VAR }}" in
-            "WILD-KSU-SUSFS")
+            "Wild-KSUN-SUSFS")
               echo "# SUSFS Configuration" >> "${{ env.DEFCONFIG }}"
               echo "CONFIG_KSU_SUSFS=y" >> "${{ env.DEFCONFIG }}"
+              echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> "${{ env.DEFCONFIG }}"
+              echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> "${{ env.DEFCONFIG }}"
+              echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> "${{ env.DEFCONFIG }}"
+              echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> "${{ env.DEFCONFIG }}"
+              echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> "${{ env.DEFCONFIG }}"
               ;;
             "SUKISU-SUSFS")
               echo "# SUSFS Configuration" >> "${{ env.DEFCONFIG }}"
@@ -194,61 +206,42 @@ jobs:
               ;;
           esac
 
-      - name: Prebuilts and Clang for Kernel Build
-        run: |
-           mkdir aosp-kernel && cd aosp-kernel
-           ${{ env.REPO }} init -u https://android.googlesource.com/kernel/manifest -b common-android15-6.6 --depth=1
-           ${{ env.REPO }} sync -j$(nproc --all)
-
-           cd ./prebuilts/clang/host/linux-x86
-           wget -O clang-r536225.tar.gz https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel-2025/clang-r536225.tar.gz
-           mkdir clang-r536225
-           cd clang-r536225
-           tar xvzf ../clang-r536225.tar.gz
-           rm ../clang-r536225.tar.gz
-
-           cd ../kleaf
-           sed -i '/# keep sorted/a\    "r536225",' versions.bzl
-
-           cd ${{ env.G_WORKSPACE }}/aosp-kernel
-           rm -rf ../kernel/prebuilts || true
-           ln -sv "$(pwd)/prebuilts" ../kernel/prebuilts
-
       - name: Build Kernel
         run: |
           KBUILD_FILE="${{ env.G_KERNEL }}/drivers/kernelsu/Kbuild"
 
           if [ -f "$KBUILD_FILE" ]; then
             echo "Applying version patch to $KBUILD_FILE for variant: ${{ env.KSU_VAR }}"
-            
+
             case "${{ env.KSU_VAR }}" in
-              "KSUN" | "KSUN-SUSFS-DEV")
+              "KSUN" | "Wild-KSUN-SUSFS")
                 sed -i "s/KSU_VERSION_FALLBACK := [0-9]\+/KSU_VERSION_FALLBACK := ${{ env.KSU_VERSION }}/" "$KBUILD_FILE"
                 sed -i "s/KSU_VERSION_TAG_FALLBACK := .*/KSU_VERSION_TAG_FALLBACK := ${{ env.KSU_GIT_TAG }}/" "$KBUILD_FILE"
                 echo "KSU-Next version patched: ${{ env.KSU_VERSION }} (${{ env.KSU_GIT_TAG }})"
                 ;;
-                
+
               "KSU-TIAN" | "KSU-TIAN-SUSFS")
                 sed -i "s/-DKSU_VERSION=[0-9]\+/-DKSU_VERSION=${{ env.KSU_VERSION }}/" "$KBUILD_FILE"
                 echo "KSU-Tian version patched: ${{ env.KSU_VERSION }}"
                 ;;
-                
+
               *)
                 echo "Variant ${{ env.KSU_VAR }} doesn't need Kbuild patching."
                 ;;
             esac
           else
-            echo "ERROR: Kbuild file not found at $KBUILD_FILE. Skipping patch."
+            if [ "${{ env.KSU_VAR }}" = "NO-ROOT" ]; then
+              echo "NO-ROOT انتخاب شده — نبود Kbuild طبیعیه، خطا نیست."
+            else
+              echo "⚠️ هشدار: variant=${{ env.KSU_VAR }} انتخاب شده ولی $KBUILD_FILE پیدا نشد. یعنی KernelSU درست اضافه نشده."
+            fi
           fi
 
           chmod +x ./build_kernel.sh
-          bash build_kernel.sh
+          bash ./build_kernel.sh
 
       - name: Finalizing Artifacts
         run: |
-          # Copy Image & Metadata
-          DIST_PATH="out/target/product/a34x/obj/KLEAF_OBJ/dist"
-          cp out/target/product/a34x/obj/KLEAF_OBJ/dist/kernel_device_modules-6.6/mgk_64_k66_kernel_aarch64.user/Image Image
           sha256sum Image >> Image.sha256sum
           bash kernel-6.6/scripts/extract-ikconfig Image >> kernel_config
 
@@ -258,46 +251,45 @@ jobs:
             echo "⚠️ هشدار: CONFIG_KSU=y در kernel_config پیدا نشد با اینکه variant=${{ env.KSU_VAR }} بود. این artifact رو چک کنید."
           fi
 
-          mv "$DIST_PATH" ./dist_folder
-          tar -czf dist.tar.gz -C ./dist_folder . 2>/dev/null
+          # SEC_BUILDNUMBER تو این نسخه (a346E) تعریف نشده -- اگه بعداً پیداش کردید به build_kernel.sh اضافه کنید
+          OSRC_RELEASE="$(grep SEC_BUILDNUMBER build_kernel.sh 2>/dev/null | tail -1 | sed 's/^export SEC_BUILDNUMBER=\"//' | sed 's/\"$//' | sed 's/ogki//')"
+          if [ -z "$OSRC_RELEASE" ]; then
+            OSRC_RELEASE="unknown"
+          fi
+          K_VER="$(grep 'VERSION = ' kernel-6.6/Makefile | head -n 1 | sed 's/VERSION = //').$(grep 'PATCHLEVEL = ' kernel-6.6/Makefile | head -n 1 | sed 's/PATCHLEVEL = //').$(grep 'SUBLEVEL = ' kernel-6.6/Makefile | head -n 1 | sed 's/SUBLEVEL = //')"
+          ASB_LEVEL="$(grep ASB_SPL kernel-6.6/build.config.common 2>/dev/null | tail -1 | sed 's/^ASB_SPL=//')"
 
-          # Build Info
-          OSRC_RELEASE="$(cat build_kernel.sh | grep SEC_BUILDNUMBER | tail | sed 's/^export SEC_BUILDNUMBER\=\"//' | sed 's/\"$//' | sed 's/ogki//')"
-          K_VER="$(cat kernel-6.6/Makefile | grep 'VERSION = ' | head -n 1 | sed 's/VERSION = //').$(cat kernel-6.6/Makefile | grep 'PATCHLEVEL = ' | head -n 1 | sed 's/PATCHLEVEL = //').$(cat kernel-6.6/Makefile | grep 'SUBLEVEL = ' | head -n 1 | sed 's/SUBLEVEL = //')"
-          ASB_LEVEL="$(cat kernel-6.6/build.config.common | grep ASB_SPL | tail | sed 's/^ASB_SPL\=//')"
-          
-          echo "Based on $OSRC_RELEASE Samsung Open Source" > versions.txt
+          echo "Based on $OSRC_RELEASE Samsung Open Source (A346E)" > versions.txt
           echo "Linux Kernel ARM64 $K_VER" >> versions.txt
           echo "Merged $ASB_LEVEL Security Patch" >> versions.txt
-          
-          # Zip & Tar naming logic
-          VER_NAME="${K_VER}-android15-6.6-abogki${OSRC_RELEASE}_${ASB_LEVEL}"
-          FILE_NAME="${{ env.KSU_VAR }}_a34x_${VER_NAME}_$(date +%Y%m%d)"
+
+          FILE_NAME="${{ env.KSU_VAR }}_a346E_${K_VER}_$(date +%Y%m%d)"
           echo "tar_name=$FILE_NAME" >> $GITHUB_ENV
 
           echo "osrc_release=$OSRC_RELEASE" >> build_info.txt
           echo "asb_level=$ASB_LEVEL" >> build_info.txt
           echo "kernel_release=$K_VER" >> build_info.txt
-          echo "$(grep 'BRANCH=' kernel-6.6/build.config.common | cut -d'=' -f2)" >> build_info.txt
-          echo "$(grep 'KMI_GENERATION=' kernel-6.6/build.config.common | cut -d'=' -f2)" >> build_info.txt
 
-          # Build Odin Tar
-          lz4 -B6 --content-size -q boot.img boot.img.lz4
-          tar -c --format=gnu -f "$FILE_NAME.tar" boot.img.lz4
-          CHECKSUM="$(md5sum "$FILE_NAME.tar" | cut -d " " -f 1)"
-          echo -n "$CHECKSUM" >> "$FILE_NAME.tar" && echo "  $FILE_NAME.tar" >> "$FILE_NAME.tar" && mv "$FILE_NAME.tar" "$FILE_NAME.tar.md5"
+          if [ "${{ env.KSU_VAR }}" != "NO-ROOT" ] && [ -f boot.img ]; then
+            lz4 -B6 --content-size -q boot.img boot.img.lz4
+            tar -c --format=gnu -f "$FILE_NAME.tar" boot.img.lz4
+            CHECKSUM="$(md5sum "$FILE_NAME.tar" | cut -d " " -f 1)"
+            echo -n "$CHECKSUM" >> "$FILE_NAME.tar" && echo "  $FILE_NAME.tar" >> "$FILE_NAME.tar" && mv "$FILE_NAME.tar" "$FILE_NAME.tar.md5"
 
-          # Build AK3 Zip
-          cp Image ${{ env.G_EXT }}/AnyKernel3/Image
-          cd ${{ env.G_EXT }}/AnyKernel3
-          ZIP_NAME="AnyKernel3_${FILE_NAME}.zip"
-          zip -r "../../$ZIP_NAME" ./*
-          echo "zip_name=$ZIP_NAME" >> $GITHUB_ENV
+            cp Image ${{ env.G_EXT }}/AnyKernel3/Image
+            cd ${{ env.G_EXT }}/AnyKernel3
+            ZIP_NAME="AnyKernel3_${FILE_NAME}.zip"
+            zip -r "../../$ZIP_NAME" ./*
+            cd ${{ env.G_WORKSPACE }}
+            echo "zip_name=$ZIP_NAME" >> $GITHUB_ENV
+          else
+            echo "zip_name=no-anykernel-zip-*.zip" >> $GITHUB_ENV
+          fi
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v5
         with:
-          name: kernel-artifacts
+          name: kernel-artifacts-a346E
           path: |
             Image
             Image.sha256sum
@@ -309,51 +301,35 @@ jobs:
       - name: Create or Update Release
         if: github.event.inputs.release == 'true'
         run: |
-          TAG="${{ env.KSU_VAR }}_$(date +%Y%m%d_%H%M)"
+          TAG="${{ env.KSU_VAR }}_a346E_$(date +%Y%m%d_%H%M)"
           TITLE="Build $TAG"
           gh release create "$TAG" --title "$TITLE" --notes-file versions.txt || true
           gh release edit "$TAG" --title "$TITLE" --notes-file versions.txt
-          gh release upload "$TAG" boot.img Image *.tar.md5 *.zip kernel_config *.tar.gz --clobber
+          gh release upload "$TAG" Image *.tar.md5 *.zip kernel_config --clobber 2>/dev/null || \
+          gh release upload "$TAG" Image kernel_config --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Release Note
-        run: |
-          BUILD_DATE=$(TZ=Asia/Bangkok date "+%Y-%m-%d %H:%M:%S")
-          KERNEL_VARIANT="${{ env.KSU_VAR }}"
-
-          cat <<EOF > /tmp/caption.txt
-          📦 *Odin Build Success*
-          *Date:* $BUILD_DATE
-          *Repository:* [${{ github.repository }}](https://github.com/${{ github.repository }})
-          *Commit:* [${{ github.sha }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
-          *KernelSU Variant:* $KERNEL_VARIANT
-          
-          _Odin Method use this archive_
-          _Changelog anymore pinned_
-          EOF
-
-          cat <<EOF > /tmp/caption-zip.txt
-          ⚡ *AnyKernel Build Success*
-          *Date:* $BUILD_DATE
-          *Repository:* [${{ github.repository }}](https://github.com/${{ github.repository }})
-          *Commit:* [${{ github.sha }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
-          *KernelSU Variant:* $KERNEL_VARIANT
-          
-          _For Odin Method use tar.md5 archive_
-          EOF
 
       - name: Telegram Notification
         if: github.event.inputs.telegram == 'true'
         run: |
-          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendDocument" \
-            -F chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
-            -F document=@"${{ env.tar_name }}.tar.md5" \
-            -F caption="$(cat /tmp/caption.txt)" \
-            -F parse_mode="Markdown"
-          
-          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendDocument" \
-            -F chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
-            -F document=@"${{ env.zip_name }}" \
-            -F caption="$(cat /tmp/caption-zip.txt)" \
-            -F parse_mode="Markdown"
+          BUILD_DATE=$(TZ=Asia/Bangkok date "+%Y-%m-%d %H:%M:%S")
+          CAPTION="📦 *A346E Build Success*
+          *Date:* $BUILD_DATE
+          *Repository:* [${{ github.repository }}](https://github.com/${{ github.repository }})
+          *Commit:* [${{ github.sha }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
+          *KernelSU Variant:* ${{ env.KSU_VAR }}"
+
+          if [ -f "${{ env.tar_name }}.tar.md5" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendDocument" \
+              -F chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+              -F document=@"${{ env.tar_name }}.tar.md5" \
+              -F caption="$CAPTION" \
+              -F parse_mode="Markdown"
+          else
+            curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendDocument" \
+              -F chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+              -F document=@"Image" \
+              -F caption="$CAPTION" \
+              -F parse_mode="Markdown"
+          fi
