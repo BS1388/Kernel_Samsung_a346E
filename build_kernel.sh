@@ -16,17 +16,6 @@ chmod a+x bin/repo
 mkdir -p aosp-kernel && cd aosp-kernel
 repo init -u https://android.googlesource.com/kernel/manifest -b common-android15-6.6 --depth=1
 repo sync -c -j"$(nproc --all)"
-
-cd prebuilts/clang/host/linux-x86
-wget -O clang-r536225.tar.gz https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel-2025/clang-r536225.tar.gz
-mkdir -p clang-r536225
-cd clang-r536225
-tar xvzf ../clang-r536225.tar.gz
-rm ../clang-r536225.tar.gz
-cd ../kleaf
-sed -i '/# keep sorted/a\    "r536225",' versions.bzl
-cd "${ROOT_DIR}/aosp-kernel"
-
 cd "${ROOT_DIR}"
 
 ln -sfn "${ROOT_DIR}/aosp-kernel/prebuilts" "${ROOT_DIR}/kernel/prebuilts"
@@ -74,8 +63,6 @@ export MODE="user"
 
 export KERNEL_VERSION="kernel-6.6"
 export SOURCE_DATE_EPOCH="$(date +%s)"
-# TODO: این مقدار برای A346B بود، برای گوشی خودتون از Settings > About phone > Software info بگیرید و جایگزین کنید
-export SEC_BUILDNUMBER="ogkiA346EPLACEHOLDER"
 
 chmod +x ./kernel_device_modules-6.6/build.sh
 ./kernel_device_modules-6.6/build.sh
