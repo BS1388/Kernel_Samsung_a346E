@@ -2,6 +2,12 @@ name: Build A346E Kernel
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - arena/01a07254-kernel-samsung-a346e
+      - Google
+      - Test-Build
+      - a346E-Stock
 
 jobs:
   build:
