@@ -13,6 +13,10 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 300
+    permissions:
+      contents: write
+      issues: write
+      gists: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -76,3 +80,28 @@ jobs:
           name: build-log
           path: build.log
           if-no-files-found: warn
+
+      - name: Upload log to GitHub Issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eux
+          echo "Creating issue with build log"
+          tail -n 3000 build.log > build_tail.log || true
+          # Create issue body with log
+          # Truncate to avoid too large issue (GitHub limit 65536 chars)
+          BODY=$(cat build_tail.log | tail -c 60000)
+          # Escape for JSON using jq
+          ISSUE_BODY=$(printf "Build failed for run %s\n\n\`\`\`\n%s\n\`\`\`\n" "${{ github.run_id }}" "$BODY" | jq -Rs .)
+          # Create issue via API
+          gh api repos/${{ github.repository }}/issues -X POST -f title="Build log for failed run ${{ github.run_id }}" -f body="$ISSUE_BODY" || true
+
+      - name: Create Gist with build log on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eux
+          tail -n 2000 build.log > gist.log || true
+          gh gist create gist.log --public --desc "Build log for run ${{ github.run_id }} - ${{ github.sha }}" || true
