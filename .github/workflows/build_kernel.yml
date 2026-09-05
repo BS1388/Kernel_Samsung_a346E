@@ -43,9 +43,19 @@ jobs:
 
       - name: Run build script
         run: |
-          set -eux
+          set -euxo pipefail
           chmod +x ./build_kernel.sh
-          bash ./build_kernel.sh
+          # Run with tee to capture log for artifact
+          bash ./build_kernel.sh 2>&1 | tee build.log
+          echo "Build script exit code: ${PIPESTATUS[0]}"
+          ls -lh Image build.log || true
+          df -h
+          # Ensure Image exists, if not, fail with clear message but still upload log
+          if [ ! -f Image ]; then
+            echo "ERROR: Image not found after build, checking out folder"
+            find out -type f -name "Image" | head -n 20 || true
+            ls -R out/target/product/a34x/obj/KLEAF_OBJ/dist 2>&1 | head -n 100 || true
+          fi
 
       - name: Upload kernel Image artifact
         if: always()
@@ -54,6 +64,15 @@ jobs:
           name: kernel-image
           path: |
             Image
+            build.log
             out/target/product/a34x/obj/KLEAF_OBJ/dist/kernel_device_modules-6.6/mgk_64_k66_kernel_aarch64.user/Image
             out/**/Image
+          if-no-files-found: warn
+
+      - name: Upload build log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
           if-no-files-found: warn

@@ -6,6 +6,9 @@ ROOT_DIR="$(pwd)"
 echo "ROOT_DIR=$ROOT_DIR"
 mkdir -p bin
 export PATH="${ROOT_DIR}/bin:$PATH"
+ulimit -n 4096 || true
+export TMPDIR=/tmp
+df -h
 
 # Install deps if apt available (for local testing and GH runner)
 if command -v apt-get >/dev/null 2>&1; then
@@ -18,13 +21,52 @@ git config --global user.email "builder@example.com" || true
 git config --global user.name "Builder" || true
 git config --global --add safe.directory "*" || true
 
-# download repo tool if missing
-if [ ! -f bin/repo ] || [ ! -s bin/repo ]; then
+# download repo tool if missing or empty, with retries and fallback URLs
+download_repo() {
+  local dest="bin/repo"
+  local urls=(
+    "https://storage.googleapis.com/git-repo-downloads/repo"
+    "https://raw.githubusercontent.com/GerritCodeReview/git-repo/main/repo"
+    "https://gerrit.googlesource.com/git-repo/+/main/repo?format=TEXT"
+  )
+  for url in "${urls[@]}"; do
+    echo "Trying to download repo from $url"
+    if command -v curl >/dev/null 2>&1; then
+      curl -L --retry 3 --retry-delay 5 -s -o "$dest" "$url" && [ -s "$dest" ] && chmod a+x "$dest" && head -n 5 "$dest" | grep -q "repo" && return 0 || true
+    fi
+    if command -v wget >/dev/null 2>&1; then
+      wget -q -O "$dest" "$url" && [ -s "$dest" ] && chmod a+x "$dest" && head -n 5 "$dest" | grep -q "repo" && return 0 || true
+    fi
+    # If format=TEXT (base64), decode
+    if [[ "$url" == *"?format=TEXT"* ]]; then
+      if [ -s "$dest" ]; then
+        base64 -d "$dest" > "${dest}.decoded" 2>/dev/null && mv "${dest}.decoded" "$dest" && chmod a+x "$dest" && return 0 || true
+      fi
+    fi
+    echo "Failed to download from $url, trying next"
+    rm -f "$dest"
+  done
+  return 1
+}
+
+if [ ! -f bin/repo ] || [ ! -s bin/repo ] || ! head -n 5 bin/repo | grep -q "repo"; then
   echo "Downloading repo tool"
-  curl -s https://storage.googleapis.com/git-repo-downloads/repo > bin/repo
-  chmod a+x bin/repo
+  if ! download_repo; then
+    echo "ERROR: Failed to download repo tool from all mirrors" >&2
+    # Try apt install
+    sudo apt-get install -y repo || true
+    if command -v repo >/dev/null 2>&1; then
+      cp "$(command -v repo)" bin/repo || true
+      chmod a+x bin/repo || true
+    fi
+  fi
 fi
-repo --version || true
+
+ls -lh bin/repo || true
+head -n 20 bin/repo || true
+chmod a+x bin/repo || true
+./bin/repo --version || bin/repo --version || repo --version || true
+export PATH="${ROOT_DIR}/bin:$PATH"
 
 # aosp-kernel sync
 mkdir -p aosp-kernel
@@ -32,20 +74,36 @@ cd aosp-kernel
 
 if [ ! -d .repo ]; then
   echo "Initializing repo manifest common-android15-6.6"
-  repo init -u https://android.googlesource.com/kernel/manifest -b common-android15-6.6 --depth=1 --no-clone-bundle
+  # Try with --repo-url fallback
+  if ! repo init -u https://android.googlesource.com/kernel/manifest -b common-android15-6.6 --depth=1 --no-clone-bundle --repo-url=https://gerrit.googlesource.com/git-repo; then
+    echo "repo init with custom repo-url failed, trying default"
+    repo init -u https://android.googlesource.com/kernel/manifest -b common-android15-6.6 --depth=1 --no-clone-bundle || true
+  fi
 fi
 
-# retry sync up to 3 times
+# Show manifest
+ls -la .repo/ || true
+cat .repo/manifest.xml 2>/dev/null | head -n 100 || true
+
+# retry sync up to 3 times, with fewer jobs to avoid OOM and disk issues
 for i in 1 2 3; do
   echo "repo sync attempt $i"
-  if repo sync -c -j"$(nproc --all)" --force-sync --no-clone-bundle --no-tags; then
+  df -h
+  # Use -j2 instead of all cores to be safer on GH runners
+  if repo sync -c -j2 --force-sync --no-clone-bundle --no-tags; then
     echo "repo sync succeeded"
+    df -h
+    du -sh . || true
     break
   fi
   echo "repo sync failed attempt $i, retrying..."
+  df -h
   sleep 10
   if [ $i -eq 3 ]; then
     echo "repo sync failed after 3 attempts"
+    # Show some debug
+    ls -la || true
+    cat .repo/manifest.xml 2>/dev/null | head -n 200 || true
     exit 1
   fi
 done
