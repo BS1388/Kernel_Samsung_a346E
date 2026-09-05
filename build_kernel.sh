@@ -148,7 +148,31 @@ if [ -L kernel-6.6 ] || [ ! -d kernel-6.6 ]; then
     cp -r "${ROOT_DIR}/kernel-6.6" kernel-6.6
   fi
 else
-  ln -sfn ../kernel-6.6 kernel-6.6 || true
+  echo "kernel-6.6 exists as real dir, ensuring it is up to date from ROOT"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --copy-links --delete "${ROOT_DIR}/kernel-6.6/" kernel-6.6/ || cp -r "${ROOT_DIR}/kernel-6.6/." kernel-6.6/
+  else
+    cp -r "${ROOT_DIR}/kernel-6.6/." kernel-6.6/ || true
+  fi
+fi
+
+# Fix bazel_common_rules symlink pointing outside workspace (same issue as kernel-6.6)
+# kernel/build/bazel_common_rules -> ../../build/bazel_common_rules points outside kernel/ workspace
+if [ -L build/bazel_common_rules ] || [ ! -d build/bazel_common_rules ]; then
+  echo "Recreating build/bazel_common_rules as real directory to avoid sandbox symlink issues"
+  rm -rf build/bazel_common_rules || true
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --copy-links "${ROOT_DIR}/build/bazel_common_rules/" build/bazel_common_rules/ || cp -r "${ROOT_DIR}/build/bazel_common_rules" build/bazel_common_rules
+  else
+    cp -r "${ROOT_DIR}/build/bazel_common_rules" build/bazel_common_rules
+  fi
+else
+  echo "build/bazel_common_rules exists as real dir, ensuring it is up to date"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --copy-links --delete "${ROOT_DIR}/build/bazel_common_rules/" build/bazel_common_rules/ || cp -r "${ROOT_DIR}/build/bazel_common_rules/." build/bazel_common_rules/
+  else
+    cp -r "${ROOT_DIR}/build/bazel_common_rules/." build/bazel_common_rules/ || true
+  fi
 fi
 
 ln -sfn build/bazel_mgk_rules/kleaf/bazel.WORKSPACE WORKSPACE
