@@ -177,10 +177,12 @@ def copy_to_dist_dir(
         testonly = testonly,
     )
 
-    copy_file(
+    # Use genrule instead of copy_file for better compatibility with newer bazel and local config
+    native.genrule(
         name = name + "_dist_tool",
-        src = "//build/bazel_common_rules/dist:dist.py",
-        out = name + "_dist.py",
+        srcs = ["//build/bazel_common_rules/dist:dist.py"],
+        outs = [name + "_dist.py"],
+        cmd = "cp -f $(location //build/bazel_common_rules/dist:dist.py) $@",
     )
 
     # The dist py_binary tool must be colocated in the same package as the
