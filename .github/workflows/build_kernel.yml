@@ -5,29 +5,49 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 300
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
         with:
-          submodules: true
+          submodules: recursive
           fetch-depth: 1
 
-      - name: Free up disk space
+      - name: Set up dependencies and free disk
         run: |
-          sudo apt-get remove --purge -y "php*" "dotnet*" "mysql*" "nodejs*" "clang*" "google*" || true
-          sudo apt-get autoremove -y
-          sudo apt-get clean
-          sudo rm -rf /usr/local /usr/share/dotnet /opt/ghc "$AGENT_TOOLSDIRECTORY"
+          set -eux
+          df -h
+          # Free up large unnecessary packages (keep clang for safety)
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get remove --purge -y "php*" "dotnet*" "mysql*" "nodejs*" "google*" "firefox*" "mongodb*" "postgresql*" "azure-cli*" || true
+          sudo apt-get autoremove -y || true
+          sudo apt-get clean || true
+          df -h
+          sudo apt-get update -y
+          sudo apt-get install -y curl wget unzip python3 python3-pip git rsync bc bison flex build-essential libssl-dev libelf-dev libncurses-dev dwarves lz4 zstd cpio libxml2-utils xsltproc python3-setuptools python3-dev zlib1g-dev libbz2-dev liblz4-dev libzstd-dev
+          git config --global user.email "builder@example.com"
+          git config --global user.name "Builder"
+          git config --global --add safe.directory "*"
+          python3 --version
+          git --version
+          df -h
+          free -h
+          nproc
 
       - name: Run build script
         run: |
+          set -eux
           chmod +x ./build_kernel.sh
           bash ./build_kernel.sh
 
       - name: Upload kernel Image artifact
-        uses: actions/upload-artifact@v5
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: kernel-image
-          path: Image
+          path: |
+            Image
+            out/target/product/a34x/obj/KLEAF_OBJ/dist/kernel_device_modules-6.6/mgk_64_k66_kernel_aarch64.user/Image
+            out/**/Image
+          if-no-files-found: warn
