@@ -460,10 +460,9 @@ def _mgk_build_config_impl(ctx):
     content = []
     content.append("DEVICE_MODULES_DIR={}".format(ctx.attr.device_modules_dir))
     content.append("KERNEL_DIR={}".format(ctx.attr.kernel_dir))
-    if ctx.attr.config_is_local[BuildSettingInfo].value:
-        content.append("DEVICE_MODULES_REL_DIR=../kernel/${DEVICE_MODULES_DIR}")
-    else:
-        content.append("DEVICE_MODULES_REL_DIR=$(realpath ${DEVICE_MODULES_DIR} --relative-to ${KERNEL_DIR})")
+    # Always use realpath to compute relative dir, to support both local and sandboxed builds
+    # and to handle kernel-6.6 being inside kernel/ as real dir (for bazel sandbox compatibility)
+    content.append("DEVICE_MODULES_REL_DIR=$(realpath ${DEVICE_MODULES_DIR} --relative-to ${KERNEL_DIR})")
     content.append("""
 . ${ROOT_DIR}/${KERNEL_DIR}/build.config.common
 . ${ROOT_DIR}/${KERNEL_DIR}/build.config.aarch64
