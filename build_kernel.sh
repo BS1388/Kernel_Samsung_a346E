@@ -135,12 +135,34 @@ cd "${ROOT_DIR}/kernel"
 
 # Symlinks for kernel build
 echo "Creating symlinks in kernel/"
-ln -sfn ../kernel-6.6 kernel-6.6
+# Fix for bazel sandbox: kernel-6.6 symlink points outside workspace, which newer bazel disallows.
+# Convert it to a real directory copy if needed, or keep symlink but also ensure sandbox disabled.
+# We'll try to make it a real dir via rsync if possible to avoid sandbox issues.
+if [ -L kernel-6.6 ] || [ ! -d kernel-6.6 ]; then
+  echo "Recreating kernel-6.6 as real directory to avoid sandbox symlink issues"
+  rm -rf kernel-6.6 || true
+  # Use rsync to copy, preserving permissions but not symlinks outside
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --copy-links "${ROOT_DIR}/kernel-6.6/" kernel-6.6/ || cp -r "${ROOT_DIR}/kernel-6.6" kernel-6.6
+  else
+    cp -r "${ROOT_DIR}/kernel-6.6" kernel-6.6
+  fi
+else
+  ln -sfn ../kernel-6.6 kernel-6.6 || true
+fi
+
 ln -sfn build/bazel_mgk_rules/kleaf/bazel.WORKSPACE WORKSPACE
 # tools/bazel symlink: target is relative to tools/ dir, so ../build/... resolves to kernel/build/...
 ln -sfn ../build/kernel/kleaf/bazel.sh tools/bazel
 chmod +x build/kernel/kleaf/bazel.sh || true
 chmod +x tools/bazel || true
+
+# Also ensure prebuilts is accessible - if symlink points outside, bazel sandbox may block it.
+# We'll keep symlink but also set SANDBOX=0 later to disable sandbox.
+# As extra safety, if prebuilts is symlink, try to make it real via bind mount? Not possible, so rely on SANDBOX=0.
+ls -la prebuilts || true
+ls -la kernel-6.6/build.config.common || true
+ls -la kernel-6.6/BUILD.bazel | head -n 20 || true
 
 # Fix mkbootimg symlink if broken - try to find mkbootimg in aosp-kernel
 if [ ! -e "tools/mkbootimg" ]; then
@@ -235,6 +257,9 @@ export SOURCE_DATE_EPOCH="$(date +%s)"
 export KBUILD_BUILD_USER="builder"
 export KBUILD_BUILD_HOST="github"
 export BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
+# Disable bazel sandbox to allow symlinks outside workspace (kernel-6.6, prebuilts)
+export SANDBOX=0
+export BUILD_CONFIG_FRAGMENTS=""
 
 echo "ENV:"
 echo "DEVICE_MODULES_DIR=$DEVICE_MODULES_DIR"
