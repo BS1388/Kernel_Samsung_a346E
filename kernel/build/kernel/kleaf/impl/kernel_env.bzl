@@ -612,6 +612,11 @@ kernel_env = rule(
             values = ["true", "false", "auto"],
         ),
         "make_goals": attr.string_list(doc = "`MAKE_GOALS`"),
+        "kcflags": attr.string_list(doc = "Extra KCFLAGS"),
+        "clang_autofdo_profile": attr.label(
+            allow_single_file = True,
+            doc = "Path to an AutoFDO profile",
+        ),
         "_rust_tools": attr.label_list(default = _get_rust_tools, allow_files = True),
         "_build_utils_sh": attr.label(
             allow_single_file = True,
