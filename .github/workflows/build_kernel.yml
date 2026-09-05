@@ -16,7 +16,6 @@ jobs:
     permissions:
       contents: write
       issues: write
-      gists: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -97,11 +96,12 @@ jobs:
           # Create issue via API
           gh api repos/${{ github.repository }}/issues -X POST -f title="Build log for failed run ${{ github.run_id }}" -f body="$ISSUE_BODY" || true
 
-      - name: Create Gist with build log on failure
+      - name: Create Gist with build log on failure (optional)
         if: failure()
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eux
           tail -n 2000 build.log > gist.log || true
-          gh gist create gist.log --public --desc "Build log for run ${{ github.run_id }} - ${{ github.sha }}" || true
+          gh gist create gist.log --public --desc "Build log for run ${{ github.run_id }} - ${{ github.sha }}" || echo "Gist creation failed, likely no permission"
