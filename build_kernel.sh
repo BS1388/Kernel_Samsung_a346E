@@ -352,25 +352,31 @@ patch_stamp() {
 generate_build_config() {
   log "Generating build.config"
 
+  # gen_build_config.py calculates kernel_dir based on cwd, so must run from kernel/ dir
+  # to get correct relative path (kernel_device_modules-6.6 not kernel/kernel_device_modules-6.6)
+  pushd "${ROOT_DIR}/kernel" >/dev/null
+
   local out_base="${ROOT_DIR}/out/target/product/a34x/obj"
   ensure_dir "${out_base}/KERNEL_OBJ"
   ensure_dir "${out_base}/KLEAF_OBJ"
 
-  local gen_script="${ROOT_DIR}/kernel/kernel_device_modules-6.6/scripts/gen_build_config.py"
+  local gen_script="kernel_device_modules-6.6/scripts/gen_build_config.py"
   if [ ! -f "$gen_script" ]; then
-    die "gen_build_config.py not found at $gen_script"
+    die "gen_build_config.py not found at $gen_script (pwd=$(pwd))"
   fi
 
-  log "Running $gen_script"
+  log "Running $gen_script from $(pwd)"
   python3 "$gen_script" \
     --kernel-defconfig mediatek-bazel_defconfig \
     --kernel-defconfig-overlays "mt6877_overlay.config mt6877_teegris_5_overlay.config" \
     --kernel-build-config-overlays "" \
     -m user \
-    -o "${out_base}/KERNEL_OBJ/build.config"
+    -o "../out/target/product/a34x/obj/KERNEL_OBJ/build.config"
 
   ok "Generated ${out_base}/KERNEL_OBJ/build.config"
   cat "${out_base}/KERNEL_OBJ/build.config"
+
+  popd >/dev/null
 }
 
 # ------------------------------------------------------------------------------
