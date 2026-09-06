@@ -27,4 +27,4 @@ config SEC_WAKEUP_CPU_ALLOCATOR
 	help
 	  This driver supports SEC Wakeup cpu support
 
-source "drivers/samsung/pm/sec_thermistor/Kconfig"
+source "$(KCONFIG_EXT_PREFIX)drivers/samsung/pm/sec_thermistor/Kconfig"

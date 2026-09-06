@@ -366,7 +366,7 @@ KCEOF
     fi
     if ! grep -q 'sec_thermistor/Kconfig' "$pm_kconfig"; then
       log "Adding sec_thermistor Kconfig source to $pm_kconfig"
-      echo 'source "drivers/samsung/pm/sec_thermistor/Kconfig"' >> "$pm_kconfig"
+      echo 'source "$(KCONFIG_EXT_PREFIX)drivers/samsung/pm/sec_thermistor/Kconfig"' >> "$pm_kconfig"
       ok "Added sec_thermistor Kconfig source"
     fi
   fi
