@@ -78,6 +78,11 @@ struct slab {
 						struct {
 							unsigned inuse:16;
 							unsigned objects:15;
+							/*
+							 * If slab debugging is enabled then the
+							 * frozen bit can be reused to indicate
+							 * that the slab was corrupted
+							 */
 							unsigned frozen:1;
 						};
 					};
@@ -243,9 +248,6 @@ static inline size_t slab_size(const struct slab *slab)
 #include <linux/random.h>
 #include <linux/sched/mm.h>
 #include <linux/list_lru.h>
-#ifdef CONFIG_KDP
-#include <linux/kdp.h>
-#endif
 
 /*
  * State of the slab allocator.
@@ -745,10 +747,6 @@ static inline struct kmem_cache *slab_pre_alloc_hook(struct kmem_cache *s,
 	if (should_failslab(s, flags))
 		return NULL;
 
-#ifdef CONFIG_KDP
-	if (is_kdp_kmem_cache(s))
-		return s;
-#endif
 	if (!memcg_slab_pre_alloc_hook(s, lru, objcgp, size, flags))
 		return NULL;
 

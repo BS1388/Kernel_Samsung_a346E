@@ -43,10 +43,8 @@
 #define F2FS_IOC_DECOMPRESS_FILE	_IO(F2FS_IOCTL_MAGIC, 23)
 #define F2FS_IOC_COMPRESS_FILE		_IO(F2FS_IOCTL_MAGIC, 24)
 #define F2FS_IOC_START_ATOMIC_REPLACE	_IO(F2FS_IOCTL_MAGIC, 25)
-#define F2FS_IOC_GET_VALID_NODE_COUNT	_IOR(F2FS_IOCTL_MAGIC, 32, __u32)
-#define F2FS_IOC_STAT_COMPRESS_FILE     _IOWR(F2FS_IOCTL_MAGIC, 33, \
-						struct f2fs_sec_stat_compfile)
-#define F2FS_IOC_SET_RELIABLE_WRITE	_IO(F2FS_IOCTL_MAGIC, 34)
+#define F2FS_IOC_GET_DEV_ALIAS_FILE	_IOR(F2FS_IOCTL_MAGIC, 26, __u32)
+#define F2FS_IOC_IO_PRIO		_IOW(F2FS_IOCTL_MAGIC, 27, __u32)
 
 /*
  * should be same as XFS_IOC_GOINGDOWN.
@@ -65,6 +63,12 @@
 #define F2FS_TRIM_FILE_DISCARD		0x1	/* send discard command */
 #define F2FS_TRIM_FILE_ZEROOUT		0x2	/* zero out */
 #define F2FS_TRIM_FILE_MASK		0x3
+
+/* for F2FS_IOC_IO_PRIO */
+enum {
+	F2FS_IOPRIO_WRITE = 1,	/* high write priority */
+	F2FS_IOPRIO_MAX,
+};
 
 struct f2fs_gc_range {
 	__u32 sync;
@@ -98,22 +102,6 @@ struct f2fs_sectrim_range {
 struct f2fs_comp_option {
 	__u8 algorithm;
 	__u8 log_cluster_size;
-};
-
-struct f2fs_sec_stat_compfile {
-	union {
-		struct {
-			__u32 in_init:1;
-			__u32 in_scan:1;
-			__u32 in_commit:1;
-			__u32 in_reserved:13;
-			__u32 out_compressed:1;
-			__u32 out_reserved:15;
-		};
-		__u32 flags;
-	};
-	__u64	st_blocks;
-	__u64	st_compressed_blocks;
 };
 
 #endif /* _UAPI_LINUX_F2FS_H */

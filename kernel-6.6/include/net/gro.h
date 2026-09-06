@@ -10,6 +10,9 @@
 #include <linux/skbuff.h>
 #include <net/udp.h>
 
+/* This should be increased if a protocol with a bigger head is added. */
+#define GRO_MAX_HEAD (MAX_HEADER + 128)
+
 struct napi_gro_cb {
 	union {
 		struct {
@@ -100,7 +103,6 @@ struct napi_gro_cb {
 #define NAPI_GRO_CB(skb) ((struct napi_gro_cb *)(skb)->cb)
 
 #define GRO_RECURSION_LIMIT 15
-
 static inline int gro_recursion_inc_test(struct sk_buff *skb)
 {
 	return ++NAPI_GRO_CB(skb)->recursion_counter == GRO_RECURSION_LIMIT;

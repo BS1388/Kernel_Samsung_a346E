@@ -144,7 +144,7 @@ enum devkmsg_log_masks {
 };
 
 /* Keep both the 'on' and 'off' bits clear, i.e. ratelimit by default: */
-#define DEVKMSG_LOG_MASK_DEFAULT	DEVKMSG_LOG_MASK_ON
+#define DEVKMSG_LOG_MASK_DEFAULT	0
 
 static unsigned int __read_mostly devkmsg_log = DEVKMSG_LOG_MASK_DEFAULT;
 
@@ -477,19 +477,10 @@ static struct latched_seq clear_seq = {
 /* record buffer */
 #define LOG_ALIGN __alignof__(unsigned long)
 #define __LOG_BUF_LEN (1 << CONFIG_LOG_BUF_SHIFT)
-#define LOG_BUF_LEN_MAX (u32)(1 << 31)
+#define LOG_BUF_LEN_MAX ((u32)1 << 31)
 static char __log_buf[__LOG_BUF_LEN] __aligned(LOG_ALIGN);
 static char *log_buf = __log_buf;
 static u32 log_buf_len = __LOG_BUF_LEN;
-
-#ifdef CONFIG_MTK_PRINTK_DEBUG
-static atomic_t uart_status __read_mostly = ATOMIC_INIT(0);
-void set_uart_status(int value)
-{
-	atomic_set(&uart_status, value);
-}
-EXPORT_SYMBOL_GPL(set_uart_status);
-#endif
 
 /*
  * Define the average message size. This only affects the number of
@@ -1137,6 +1128,17 @@ static unsigned int __init add_to_rb(struct printk_ringbuffer *rb,
 
 static char setup_text_buf[PRINTKRB_RECORD_MAX] __initdata;
 
+static void print_log_buf_usage_stats(void)
+{
+	unsigned int descs_count = log_buf_len >> PRB_AVGBITS;
+	size_t meta_data_size;
+
+	meta_data_size = descs_count * (sizeof(struct prb_desc) + sizeof(struct printk_info));
+
+	pr_info("log buffer data + meta data: %u + %zu = %zu bytes\n",
+		log_buf_len, meta_data_size, log_buf_len + meta_data_size);
+}
+
 void __init setup_log_buf(int early)
 {
 	struct printk_info *new_infos;
@@ -1166,20 +1168,25 @@ void __init setup_log_buf(int early)
 	if (!early && !new_log_buf_len)
 		log_buf_add_cpu();
 
-	if (!new_log_buf_len)
+	if (!new_log_buf_len) {
+		/* Show the memory stats only once. */
+		if (!early)
+			goto out;
+
 		return;
+	}
 
 	new_descs_count = new_log_buf_len >> PRB_AVGBITS;
 	if (new_descs_count == 0) {
 		pr_err("new_log_buf_len: %lu too small\n", new_log_buf_len);
-		return;
+		goto out;
 	}
 
 	new_log_buf = memblock_alloc(new_log_buf_len, LOG_ALIGN);
 	if (unlikely(!new_log_buf)) {
 		pr_err("log_buf_len: %lu text bytes not available\n",
 		       new_log_buf_len);
-		return;
+		goto out;
 	}
 
 	new_descs_size = new_descs_count * sizeof(struct prb_desc);
@@ -1242,7 +1249,7 @@ void __init setup_log_buf(int early)
 		       prb_next_seq(&printk_rb_static) - seq);
 	}
 
-	pr_info("log_buf_len: %u bytes\n", log_buf_len);
+	print_log_buf_usage_stats();
 	pr_info("early log buf free: %u(%u%%)\n",
 		free, (free * 100) / __LOG_BUF_LEN);
 	return;
@@ -1251,6 +1258,8 @@ err_free_descs:
 	memblock_free(new_descs, new_descs_size);
 err_free_log_buf:
 	memblock_free(new_log_buf, new_log_buf_len);
+out:
+	print_log_buf_usage_stats();
 }
 
 static bool __read_mostly ignore_loglevel;
@@ -2129,15 +2138,8 @@ static inline u32 printk_caller_id(void)
 	if (caller_id)
 		return caller_id;
 
-#ifdef CONFIG_MTK_PRINTK_DEBUG
-#define UART_INDEX	(1000000)
-#define CPU_INDEX	(100000)
-	return (in_task() ? 0 : 0x80000000) + atomic_read(&uart_status) * UART_INDEX +
-		raw_smp_processor_id() * CPU_INDEX + task_pid_nr(current);
-#else
 	return in_task() ? task_pid_nr(current) :
 		0x80000000 + smp_processor_id();
-#endif
 }
 
 /**
@@ -2191,10 +2193,6 @@ static u16 printk_sprint(char *text, u16 size, int facility,
 			 va_list args)
 {
 	u16 text_len;
-#ifdef CONFIG_MTK_PRINTK_DEBUG
-	u16 mtk_prefix_len;
-	char textbuf[TASK_COMM_LEN + 3];
-#endif
 
 	text_len = vscnprintf(text, size, fmt, args);
 
@@ -2214,21 +2212,6 @@ static u16 printk_sprint(char *text, u16 size, int facility,
 			memmove(text, text + prefix_len, text_len);
 		}
 	}
-
-#ifdef CONFIG_MTK_PRINTK_DEBUG
-	if (!(*flags & LOG_CONT)) {
-		mtk_prefix_len = scnprintf(textbuf, sizeof(textbuf), "%s: ", current->comm);
-		if (likely((text_len + mtk_prefix_len) < size)) {
-			memmove(text + mtk_prefix_len, text, text_len);
-			text_len += mtk_prefix_len;
-		} else {
-			memmove(text + mtk_prefix_len, text, size - 1 - mtk_prefix_len);
-			text_len = size - 1;
-		}
-		memcpy(text, textbuf, mtk_prefix_len);
-		text[size - 1] = '\0';
-	}
-#endif
 
 	trace_console(text, text_len);
 
@@ -2315,11 +2298,6 @@ int vprintk_store(int facility, int level,
 	 * prb_reserve_in_last() and prb_reserve() purposely invalidate the
 	 * structure when they fail.
 	 */
-#ifdef CONFIG_MTK_PRINTK_DEBUG
-	reserve_size += strnlen(current->comm, TASK_COMM_LEN) + 2;
-	if (reserve_size > PRINTKRB_RECORD_MAX)
-		reserve_size = PRINTKRB_RECORD_MAX;
-#endif
 	prb_rec_init_wr(&r, reserve_size);
 	if (!prb_reserve(&e, prb, &r)) {
 		/* truncate the message if it is too long for empty buffer */
@@ -2343,14 +2321,15 @@ int vprintk_store(int facility, int level,
 	if (dev_info)
 		memcpy(&r.info->dev_info, dev_info, sizeof(r.info->dev_info));
 
+	trace_android_rvh_logbuf(prb, &r);
+	trace_android_vh_logbuf(prb, &r);
+
 	/* A message without a trailing newline can be continued. */
 	if (!(flags & LOG_NEWLINE))
 		prb_commit(&e);
 	else
 		prb_final_commit(&e);
 
-	trace_android_rvh_logbuf(prb, &r);
-	trace_android_vh_logbuf(prb, &r);
 	ret = text_len + trunc_msg_len;
 out:
 	printk_exit_irqrestore(recursion_ptr, irqflags);
@@ -3184,7 +3163,12 @@ void console_unblank(void)
 	 */
 	cookie = console_srcu_read_lock();
 	for_each_console_srcu(c) {
-		if ((console_srcu_read_flags(c) & CON_ENABLED) && c->unblank) {
+		short flags = console_srcu_read_flags(c);
+
+		if (flags & CON_SUSPENDED)
+			continue;
+
+		if ((flags & CON_ENABLED) && c->unblank) {
 			found_unblank = true;
 			break;
 		}
@@ -3221,7 +3205,12 @@ void console_unblank(void)
 
 	cookie = console_srcu_read_lock();
 	for_each_console_srcu(c) {
-		if ((console_srcu_read_flags(c) & CON_ENABLED) && c->unblank)
+		short flags = console_srcu_read_flags(c);
+
+		if (flags & CON_SUSPENDED)
+			continue;
+
+		if ((flags & CON_ENABLED) && c->unblank)
 			c->unblank();
 	}
 	console_srcu_read_unlock(cookie);
@@ -3628,11 +3617,6 @@ void register_console(struct console *newcon)
 
 	console_sysfs_notify();
 
-#ifdef CONFIG_MTK_PRINTK_DEBUG
-	if (!strncmp(newcon->name, "ttyS", 4))
-		atomic_set(&uart_status, 1);
-#endif
-
 	/*
 	 * By unregistering the bootconsoles after we enable the real console
 	 * we get the "console xxx enabled" message on all the consoles -
@@ -3662,11 +3646,6 @@ static int unregister_console_locked(struct console *console)
 	int res;
 
 	lockdep_assert_console_list_lock_held();
-
-#ifdef CONFIG_MTK_PRINTK_DEBUG
-	if (!strncmp(console->name, "ttyS", 4))
-		atomic_set(&uart_status, 0);
-#endif
 
 	con_printk(KERN_INFO, console, "disabled\n");
 

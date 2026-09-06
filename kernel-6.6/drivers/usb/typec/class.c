@@ -502,6 +502,7 @@ static void typec_altmode_release(struct device *dev)
 		typec_altmode_put_partner(alt);
 
 	altmode_id_remove(alt->adev.dev.parent, alt->id);
+	put_device(alt->adev.dev.parent);
 	kfree(alt);
 }
 
@@ -550,6 +551,8 @@ typec_register_altmode(struct device *parent,
 	alt->adev.dev.groups = alt->groups;
 	alt->adev.dev.type = &typec_altmode_dev_type;
 	dev_set_name(&alt->adev.dev, "%s.%u", dev_name(parent), id);
+
+	get_device(alt->adev.dev.parent);
 
 	/* Link partners and plugs with the ports */
 	if (!is_port)
@@ -1420,15 +1423,8 @@ static ssize_t data_role_store(struct device *dev,
 	struct typec_port *port = to_typec_port(dev);
 	int ret;
 
-#if defined(CONFIG_USB_DEBUG_DETAILED_LOG)
-	pr_info("%s %s +\n", __func__, buf);
-#endif
 	if (!port->ops || !port->ops->dr_set) {
-#if defined(CONFIG_USB_DEBUG_DETAILED_LOG)
-		dev_err(dev, "data role swapping not supported\n");
-#else
 		dev_dbg(dev, "data role swapping not supported\n");
-#endif
 		return -EOPNOTSUPP;
 	}
 
@@ -1449,9 +1445,6 @@ static ssize_t data_role_store(struct device *dev,
 	ret = size;
 unlock_and_ret:
 	mutex_unlock(&port->port_type_lock);
-#if defined(CONFIG_USB_DEBUG_DETAILED_LOG)
-	pr_info("%s-\n", __func__);
-#endif
 	return ret;
 }
 
@@ -1475,24 +1468,13 @@ static ssize_t power_role_store(struct device *dev,
 	struct typec_port *port = to_typec_port(dev);
 	int ret;
 
-#if defined(CONFIG_USB_DEBUG_DETAILED_LOG)
-	pr_info("%s %s +\n", __func__, buf);
-#endif
 	if (!port->ops || !port->ops->pr_set) {
-#if defined(CONFIG_USB_DEBUG_DETAILED_LOG)
-		dev_err(dev, "power role swapping not supported\n");
-#else
 		dev_dbg(dev, "power role swapping not supported\n");
-#endif
 		return -EOPNOTSUPP;
 	}
 
 	if (port->pwr_opmode != TYPEC_PWR_MODE_PD) {
-#if defined(CONFIG_USB_DEBUG_DETAILED_LOG)
-		dev_err(dev, "partner unable to swap power role\n");
-#else
 		dev_dbg(dev, "partner unable to swap power role\n");
-#endif
 		return -EIO;
 	}
 
@@ -1502,13 +1484,8 @@ static ssize_t power_role_store(struct device *dev,
 
 	mutex_lock(&port->port_type_lock);
 	if (port->port_type != TYPEC_PORT_DRP) {
-#if defined(CONFIG_USB_DEBUG_DETAILED_LOG)
-		dev_err(dev, "port type fixed at \"%s\"",
-			     typec_port_power_roles[port->port_type]);
-#else
 		dev_dbg(dev, "port type fixed at \"%s\"",
 			     typec_port_power_roles[port->port_type]);
-#endif
 		ret = -EOPNOTSUPP;
 		goto unlock_and_ret;
 	}
@@ -1520,9 +1497,6 @@ static ssize_t power_role_store(struct device *dev,
 	ret = size;
 unlock_and_ret:
 	mutex_unlock(&port->port_type_lock);
-#if defined(CONFIG_USB_DEBUG_DETAILED_LOG)
-	pr_info("%s-\n", __func__);
-#endif
 	return ret;
 }
 
@@ -1547,16 +1521,9 @@ port_type_store(struct device *dev, struct device_attribute *attr,
 	int ret;
 	enum typec_port_type type;
 
-#if defined(CONFIG_USB_DEBUG_DETAILED_LOG)
-	pr_info("%s %s +\n", __func__, buf);
-#endif
 	if (port->cap->type != TYPEC_PORT_DRP ||
 	    !port->ops || !port->ops->port_type_set) {
-#if defined(CONFIG_USB_DEBUG_DETAILED_LOG)
-		dev_err(dev, "changing port type not supported\n");
-#else
 		dev_dbg(dev, "changing port type not supported\n");
-#endif
 		return -EOPNOTSUPP;
 	}
 
@@ -1566,10 +1533,7 @@ port_type_store(struct device *dev, struct device_attribute *attr,
 
 	type = ret;
 	mutex_lock(&port->port_type_lock);
-#if defined(CONFIG_USB_DEBUG_DETAILED_LOG)
-	pr_info("%s port_type : %d, type : %d\n",
-			__func__, port->port_type, type);
-#endif
+
 	if (port->port_type == type) {
 		ret = size;
 		goto unlock_and_ret;
@@ -1584,9 +1548,6 @@ port_type_store(struct device *dev, struct device_attribute *attr,
 
 unlock_and_ret:
 	mutex_unlock(&port->port_type_lock);
-#if defined(CONFIG_USB_DEBUG_DETAILED_LOG)
-	pr_info("%s -\n", __func__);
-#endif
 	return ret;
 }
 
@@ -1906,10 +1867,6 @@ void typec_set_pwr_opmode(struct typec_port *port,
 {
 	struct device *partner_dev;
 
-#if defined(CONFIG_USB_DEBUG_DETAILED_LOG)
-	pr_info("%s pwr_opmode=%d opmode=%d\n", __func__,
-			port->pwr_opmode, opmode);
-#endif
 	if (port->pwr_opmode == opmode)
 		return;
 
@@ -2190,14 +2147,16 @@ void typec_port_register_altmodes(struct typec_port *port,
 	const struct typec_altmode_ops *ops, void *drvdata,
 	struct typec_altmode **altmodes, size_t n)
 {
-	struct fwnode_handle *altmodes_node, *child;
+	struct fwnode_handle *child;
 	struct typec_altmode_desc desc;
 	struct typec_altmode *alt;
 	size_t index = 0;
 	u32 svid, vdo;
 	int ret;
 
-	altmodes_node = device_get_named_child_node(&port->dev, "altmodes");
+	struct fwnode_handle *altmodes_node  __free(fwnode_handle) =
+		device_get_named_child_node(&port->dev, "altmodes");
+
 	if (!altmodes_node)
 		return; /* No altmodes specified */
 
@@ -2237,6 +2196,7 @@ void typec_port_register_altmodes(struct typec_port *port,
 		altmodes[index] = alt;
 		index++;
 	}
+	fwnode_handle_put(altmodes_node);
 }
 EXPORT_SYMBOL_GPL(typec_port_register_altmodes);
 
