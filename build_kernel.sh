@@ -293,9 +293,56 @@ prepare_workspace() {
     ok "Ensured ${ROOT_DIR}/system/tools/mkbootimg"
   fi
 
+  # --- MTK signing key fix ---
+  # The build needs certs/mtk_signing_key.pem in both kernel-6.6/certs/ and kernel_device_modules-6.6/certs/
+  # In repo, key only exists in kernel_device_modules-6.6/certs/, not in kernel-6.6/certs/
+  # After rsync, kernel/kernel-6.6/certs/ still lacks the key, causing sign-file to fail with "No such file"
+  # Fix: copy key to all expected locations
+  log "Ensuring mtk_signing_key.pem exists in all certs locations"
+  local mtk_key_src=""
+  if [ -f "${ROOT_DIR}/kernel/kernel_device_modules-6.6/certs/mtk_signing_key.pem" ]; then
+    mtk_key_src="${ROOT_DIR}/kernel/kernel_device_modules-6.6/certs/mtk_signing_key.pem"
+  elif [ -f "kernel_device_modules-6.6/certs/mtk_signing_key.pem" ]; then
+    mtk_key_src="$(pwd)/kernel_device_modules-6.6/certs/mtk_signing_key.pem"
+  elif [ -f "${ROOT_DIR}/kernel-6.6/certs/mtk_signing_key.pem" ]; then
+    mtk_key_src="${ROOT_DIR}/kernel-6.6/certs/mtk_signing_key.pem"
+  fi
+
+  if [ -n "$mtk_key_src" ] && [ -f "$mtk_key_src" ]; then
+    log "Found MTK signing key at $mtk_key_src ($(du -h "$mtk_key_src" | awk '{print $1}'))"
+    # Ensure in ROOT_DIR/kernel-6.6/certs/
+    ensure_dir "${ROOT_DIR}/kernel-6.6/certs"
+    if [ ! -f "${ROOT_DIR}/kernel-6.6/certs/mtk_signing_key.pem" ]; then
+      cp -v "$mtk_key_src" "${ROOT_DIR}/kernel-6.6/certs/mtk_signing_key.pem" || warn "Failed to copy to ROOT_DIR/kernel-6.6/certs/"
+    fi
+    # Ensure in kernel/kernel-6.6/certs/ (workspace)
+    ensure_dir "kernel-6.6/certs"
+    if [ ! -f "kernel-6.6/certs/mtk_signing_key.pem" ]; then
+      cp -v "$mtk_key_src" "kernel-6.6/certs/mtk_signing_key.pem" || warn "Failed to copy to kernel/kernel-6.6/certs/"
+    fi
+    # Ensure in kernel_device_modules-6.6/certs/ at root if exists (for completeness)
+    if [ -d "${ROOT_DIR}/kernel-6.6/../kernel_device_modules-6.6/certs" ] 2>/dev/null; then
+      ensure_dir "${ROOT_DIR}/kernel_device_modules-6.6/certs" 2>/dev/null || true
+      cp -v "$mtk_key_src" "${ROOT_DIR}/kernel_device_modules-6.6/certs/mtk_signing_key.pem" 2>/dev/null || true
+    fi
+    # Ensure in workspace kernel_device_modules-6.6/certs/ (should already exist, but ensure)
+    ensure_dir "kernel_device_modules-6.6/certs"
+    if [ ! -f "kernel_device_modules-6.6/certs/mtk_signing_key.pem" ]; then
+      cp -v "$mtk_key_src" "kernel_device_modules-6.6/certs/mtk_signing_key.pem" || warn "Failed to copy to kernel_device_modules-6.6/certs/"
+    fi
+    ls -lh "kernel-6.6/certs/mtk_signing_key.pem" "${ROOT_DIR}/kernel-6.6/certs/mtk_signing_key.pem" "kernel_device_modules-6.6/certs/mtk_signing_key.pem" 2>&1 || true
+    ok "MTK signing key ensured"
+  else
+    warn "MTK signing key not found in any known location, will try to continue (may fail at modules_install)"
+    find "${ROOT_DIR}" -name "mtk_signing_key.pem" 2>/dev/null | head -n 10 || true
+    find "$(pwd)" -name "mtk_signing_key.pem" 2>/dev/null | head -n 10 || true
+  fi
+
   # List critical files for debug
   ls -lh "kernel-6.6/build.config.common" 2>/dev/null || warn "kernel-6.6/build.config.common not found"
   ls -lh "prebuilts" 2>/dev/null || true
+  ls -lh "kernel-6.6/certs/mtk_signing_key.pem" 2>/dev/null || warn "kernel-6.6/certs/mtk_signing_key.pem still missing after fix!"
+  ls -lh "kernel_device_modules-6.6/certs/mtk_signing_key.pem" 2>/dev/null || warn "kernel_device_modules-6.6/certs/mtk_signing_key.pem missing!"
 
   popd >/dev/null
   ok "Workspace prepared"
