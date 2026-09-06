@@ -1,7 +1,7 @@
 # Google FDO AutoFDO profile for A346E kernel
 # This directory holds kernel.afdo outside of kernel-6.6 to survive kernel updates.
 # Original location was kernel-6.6/android/gki/aarch64/afdo/kernel.afdo (3.1M)
-# Now referenced as //google-FDO:kernel.afdo
+# Now referenced as //Google-FDO:kernel.afdo
 
 package(
     default_visibility = ["//visibility:public"],
