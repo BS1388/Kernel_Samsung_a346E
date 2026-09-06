@@ -7,9 +7,4 @@ package(
     default_visibility = ["//visibility:public"],
 )
 
-filegroup(
-    name = "kernel.afdo",
-    srcs = ["kernel.afdo"],
-)
-
 exports_files(["kernel.afdo"])
