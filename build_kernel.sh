@@ -379,8 +379,30 @@ KCEOF
   if [ -f "$wakeup_file" ]; then
     if grep -q 'kernel/power/power.h' "$wakeup_file"; then
       log "Patching $wakeup_file to remove private power.h include"
-      sed -i 's|#include "../../../kernel/power/power.h"|/* compat: removed private power.h for kernel-6.6 */|' "$wakeup_file" || true
+      # Use ^ anchor to avoid matching inside already-commented line /* #include ... */
+      sed -i 's|^#include "../../../kernel/power/power.h"|/* compat: removed private power.h for kernel-6.6 */|' "$wakeup_file" || true
+      sed -i 's|^#include ".*kernel/power/power.h"|/* compat: removed private power.h for kernel-6.6 */|' "$wakeup_file" || true
+      # Also remove the second commented line if it exists from previous patch (avoid nested /*)
+      sed -i '/^\/\* #include ".*kernel\/power\/power.h" \*\//d' "$wakeup_file" || true
       ok "Patched $wakeup_file"
+      # Verify no nested comment remains
+      if grep -q '/\*.*/\*.*power.h' "$wakeup_file"; then
+        warn "Nested comment still in $wakeup_file, cleaning"
+        sed -i '/power.h/d' "$wakeup_file" || true
+        echo '/* compat: removed private power.h for kernel-6.6 */' >> "$wakeup_file.tmp" || true
+      fi
+    fi
+    # Ensure suspend.h is included for PM_POST_SUSPEND and register_pm_notifier (lost with power.h)
+    if ! grep -q 'linux/suspend.h' "$wakeup_file"; then
+      log "Adding missing suspend.h to $wakeup_file"
+      if grep -q 'uapi/linux/sched/types.h' "$wakeup_file"; then
+        sed -i '/#include <uapi\/linux\/sched\/types.h>/a #include <linux\/suspend.h>\n#include <linux\/pm.h>' "$wakeup_file" || true
+      elif grep -q 'trace/events/power.h' "$wakeup_file"; then
+        sed -i '/#include <trace\/events\/power.h>/a #include <linux\/suspend.h>' "$wakeup_file" || true
+      else
+        sed -i '1i #include <linux/suspend.h>\n#include <linux/pm.h>' "$wakeup_file" || true
+      fi
+      ok "Added suspend.h to $wakeup_file"
     fi
   fi
 

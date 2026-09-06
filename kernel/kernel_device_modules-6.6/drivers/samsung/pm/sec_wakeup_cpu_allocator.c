@@ -13,7 +13,8 @@
 #include <trace/events/power.h>
 #include <uapi/linux/sched/types.h>
 /* compat: removed private power.h include for kernel-6.6 */
-/* #include "../../../kernel/power/power.h" */
+#include <linux/suspend.h>
+#include <linux/pm.h>
 
 
 #undef pr_fmt
