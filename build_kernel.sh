@@ -334,10 +334,38 @@ LOOP_EOF
     fi
   fi
 
-  # --- Fix 2c: Samsung PM drivers - sec_thermistor Makefile missing and power.h private include ---
+  # --- Fix 2c: Samsung PM drivers - sec_thermistor Makefile missing and power.h private include + missing SEC_PM Kconfig ---
   # Error: Unable to find sec_thermistor.ko, sec_pm_debug.ko, sec_wakeup_cpu_allocator.ko
   # Root cause: drivers/samsung/pm/Makefile missing sec_thermistor/ subdirectory
-  # And sec_wakeup_cpu_allocator.c includes private kernel/power/power.h which doesn't exist in device_modules
+  # And sec_wakeup_cpu_allocator.c includes private kernel/power/power.h
+  # And drivers/samsung/pm/Kconfig missing config SEC_PM (depends on SEC_PM fails)
+  local pm_kconfig="kernel_device_modules-6.6/drivers/samsung/pm/Kconfig"
+  if [ -f "$pm_kconfig" ]; then
+    if ! grep -q "^config SEC_PM$" "$pm_kconfig"; then
+      log "Patching $pm_kconfig to add missing SEC_PM core config"
+      # Insert at top after header
+      tmp_kc=$(mktemp)
+      {
+        head -n 7 "$pm_kconfig"
+        cat <<'KCEOF'
+config SEC_PM
+	tristate "Samsung PM core"
+	default y
+	help
+	  Samsung Power Management core. Required for sec_pm_debug,
+	  sec_wakeup_cpu_allocator and sec_thermistor.
+
+KCEOF
+        tail -n +8 "$pm_kconfig"
+      } > "$tmp_kc"
+      mv "$tmp_kc" "$pm_kconfig"
+      ok "Patched $pm_kconfig with SEC_PM"
+      cat "$pm_kconfig" | head -n 20
+    else
+      ok "SEC_PM already in $pm_kconfig"
+    fi
+  fi
+
   local pm_makefile="kernel_device_modules-6.6/drivers/samsung/pm/Makefile"
   if [ -f "$pm_makefile" ]; then
     if ! grep -q "sec_thermistor" "$pm_makefile"; then

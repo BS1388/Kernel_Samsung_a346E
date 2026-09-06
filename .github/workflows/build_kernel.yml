@@ -393,6 +393,39 @@ jobs:
             fi
           fi
 
+          # Fix 2c: SEC_PM Kconfig missing (causes Unable to find sec_*.ko)
+          echo "Checking SEC_PM Kconfig"
+          for kc in "${{ env.G_KERNEL }}/drivers/samsung/pm/Kconfig" "${{ github.workspace }}/kernel/kernel_device_modules-6.6/drivers/samsung/pm/Kconfig" "kernel_device_modules-6.6/drivers/samsung/pm/Kconfig"; do
+            if [ -f "$kc" ]; then
+              echo "Checking $kc"
+              if ! grep -q "^config SEC_PM$" "$kc"; then
+                echo "Patching $kc to add SEC_PM"
+                tmpkc=$(mktemp)
+                { head -n 7 "$kc"; cat <<'KCEOF'
+config SEC_PM
+	tristate "Samsung PM core"
+	default y
+	help
+	  Samsung Power Management core.
+
+KCEOF
+                tail -n +8 "$kc"; } > "$tmpkc"
+                mv "$tmpkc" "$kc"
+                echo "Patched $kc"
+                cat "$kc" | head -n 15
+              else
+                echo "SEC_PM already in $kc"
+              fi
+            fi
+          done
+          # Also ensure pm Makefile has sec_thermistor
+          for pmk in "${{ env.G_KERNEL }}/drivers/samsung/pm/Makefile" "${{ github.workspace }}/kernel/kernel_device_modules-6.6/drivers/samsung/pm/Makefile"; do
+            if [ -f "$pmk" ] && ! grep -q "sec_thermistor" "$pmk"; then
+              echo "Patching $pmk"
+              echo 'obj-$(CONFIG_SEC_PM_THERMISTOR)	+= sec_thermistor/' >> "$pmk"
+            fi
+          done
+
           echo "Compat fixes applied"
 
       # ======================================================================

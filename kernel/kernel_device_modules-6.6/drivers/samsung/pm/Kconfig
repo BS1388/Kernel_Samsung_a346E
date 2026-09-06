@@ -1,9 +1,16 @@
 # drivers/samsung/Kconfig
 #
 # Copyright (c) 2010-2022 Samsung Electronics Co., Ltd.
-#		http://www.samsung.com/
+#	http://www.samsung.com/
 #
 # Licensed under GPLv2
+
+config SEC_PM
+	tristate "Samsung PM core"
+	default y
+	help
+	  Samsung Power Management core. Required for sec_pm_debug,
+	  sec_wakeup_cpu_allocator and sec_thermistor.
 
 config SEC_PM_DEBUG
     tristate "Enable Samsung Mobile Power management debug support"
