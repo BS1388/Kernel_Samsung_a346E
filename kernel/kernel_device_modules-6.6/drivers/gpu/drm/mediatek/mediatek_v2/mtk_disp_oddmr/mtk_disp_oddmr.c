@@ -4,6 +4,7 @@
  */
 
 #include <linux/clk.h>
+#include <linux/minmax.h>
 #include <linux/component.h>
 #include <linux/of_device.h>
 #include <linux/of_irq.h>
@@ -717,8 +718,6 @@ static uint32_t g_od_udma_effi[MAX_LONG_BURST_SIZE] = {
 static uint32_t g_od_udma_merge_lines_cand[] = {
 	1, 2, 4, 6, 8, 10, 12, 14, 16,
 };
-
-#define MIN(a,b) (((a)<(b))?(a):(b))
 
 
 static unsigned char lookup[16] = {

@@ -15,6 +15,7 @@
 #define __LCM_DRV_H__
 
 #include <linux/device.h>
+#include <linux/minmax.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
 
@@ -826,11 +827,9 @@ struct LCM_PARAMS {
 
 
 #ifndef MAX
-#define MAX(x, y)   (((x) >= (y)) ? (x) : (y))
 #endif				/* MAX */
 
 #ifndef MIN
-#define MIN(x, y)   (((x) <= (y)) ? (x) : (y))
 #endif				/* MIN */
 
 #define INIT_SIZE			(640)

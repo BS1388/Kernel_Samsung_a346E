@@ -13,6 +13,7 @@
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
+#include <linux/minmax.h>
 #include <linux/kthread.h>
 #include <linux/memory.h>
 #include <linux/mmc/card.h>
@@ -167,8 +168,6 @@ static struct nl_rpmb_send_req nl_rpmb_req;
 #endif
 
 #define RPMB_NAME "rpmb"
-
-#define MIN(a, b) (((a) < (b)) ? (a) : (b))
 
 
 enum ufs_ioctl {

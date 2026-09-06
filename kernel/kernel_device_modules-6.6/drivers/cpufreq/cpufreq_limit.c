@@ -21,6 +21,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/minmax.h>
 #include <linux/sysfs.h>
 #include <linux/err.h>
 #include <linux/suspend.h>
@@ -35,8 +36,6 @@
 
 #define MAX_BUF_SIZE 1024
 #define LIMIT_RELEASE -1
-#define MIN(a, b)     (((a) < (b)) ? (a) : (b))
-#define MAX(a, b)     (((a) > (b)) ? (a) : (b))
 
 static struct freq_qos_request *max_req[DVFS_MAX_ID];
 static struct freq_qos_request *min_req[DVFS_MAX_ID];

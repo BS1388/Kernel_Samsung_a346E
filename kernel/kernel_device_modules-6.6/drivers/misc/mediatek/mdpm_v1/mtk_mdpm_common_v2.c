@@ -4,6 +4,7 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/minmax.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/sysfs.h>
@@ -38,7 +39,6 @@ u32 *md_share_mem;
 #define _BIT_(_bit_)		((unsigned int)(1 << (_bit_)))
 #define _BITMASK_(_bits_)	\
 (((unsigned int)-1>>(31-((1)?_bits_)))&~((1U<<((0)?_bits_))-1))
-#define MAX(a, b) ((a) > (b) ? (a) : (b))
 
 #define DLPT_TAG     "[MDPM]"
 #define mdpl_pr_err(fmt, args...)		pr_err(DLPT_TAG fmt, ##args)

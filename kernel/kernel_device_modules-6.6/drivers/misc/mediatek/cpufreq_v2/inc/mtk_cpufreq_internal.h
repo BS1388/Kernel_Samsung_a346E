@@ -8,6 +8,7 @@
 
 /* system includes */
 #include <linux/kernel.h>
+#include <linux/minmax.h>
 #include <linux/module.h>
 #include <linux/sched.h>
 #include <linux/init.h>
@@ -42,11 +43,6 @@
 #include "mtk_cpufreq_api.h"
 #include "mtk_cpufreq_config.h"
 #include "mtk_cpufreq_struct.h"
-
-#define MAX(a, b) ((a) >= (b) ? (a) : (b))
-#define MIN(a, b) ((a) >= (b) ? (b) : (a))
-
-
 /* PORTING */
 #define PPM_READY (1)
 

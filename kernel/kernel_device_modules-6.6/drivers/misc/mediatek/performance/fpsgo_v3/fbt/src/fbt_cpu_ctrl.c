@@ -8,6 +8,7 @@
 #define DEBUG_LOG	0
 
 #include <linux/slab.h>
+#include <linux/minmax.h>
 #include <linux/string.h>
 #include <linux/notifier.h>
 #include <linux/cpufreq.h>
@@ -25,9 +26,6 @@
 #include "fbt_cpu.h"
 
 /*--------------------------------------------*/
-
-#define MAX(a, b) (((a) > (b)) ? (a) : (b))
-#define MIN(a, b) (((a) < (b)) ? (a) : (b))
 
 
 struct FBT_CPU_CTRL_NOTIFIER_PUSH_TAG {

@@ -30,6 +30,7 @@
 #include <linux/hrtimer.h>
 #include <linux/list.h>
 #include <linux/kernel.h>
+#include <linux/minmax.h>
 #include <linux/bsearch.h>
 #include <linux/sched/task.h>
 #include <linux/sched/cputime.h>
@@ -119,10 +120,6 @@
 #define FPSGO_SOFTAFFINITY_NOT_USED 5
 #define FPSGO_BAFFINITY_USERDEFINE 6
 #define FPSGO_BAFFINITY_TOTAL 7
-
-
-#define MAX(a, b) (((a) > (b)) ? (a) : (b))
-#define MIN(a, b) (((a) < (b)) ? (a) : (b))
 
 struct fbt_cpu_dvfs_info {
 	unsigned int *power;

@@ -7,6 +7,7 @@
 #define __LINUX_RT_TCPC_H
 
 #include <linux/device.h>
+#include <linux/minmax.h>
 #include <linux/hrtimer.h>
 #include <linux/workqueue.h>
 #include <linux/pm_wakeup.h>
@@ -24,10 +25,6 @@
 #define PE_STATE_FULL_NAME	0
 
 #define TCPC_NORMAL_RP_DUTY	(308)		/* 30% */
-
-#ifndef MIN
-#define MIN(a, b)       (((a) < (b)) ? (a) : (b))
-#endif
 
 /* provide to TCPC interface */
 extern int tcpci_report_usb_port_attached(struct tcpc_device *tcpc);

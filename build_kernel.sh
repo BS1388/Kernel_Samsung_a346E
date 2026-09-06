@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # Build script for Samsung A346E kernel (MediaTek mt6877, kernel-6.6)
-# Refactored & hardened - handles bazel sandbox, casing, and FDO
+# Refactored & hardened - handles bazel sandbox, casing, FDO, and compat fixes
 # ==============================================================================
 set -euo pipefail
 
@@ -168,6 +168,232 @@ link_prebuilts() {
 }
 
 # ------------------------------------------------------------------------------
+# 5a. Compatibility fixes (kernel-6.6 update vs device modules)
+# ------------------------------------------------------------------------------
+apply_compat_fixes() {
+  log "Applying compatibility fixes for kernel-6.6 vs device_modules-6.6"
+
+  # --- Fix 1: Restore include/linux/loop.h which was removed in new kernel ---
+  # New kernel moved struct loop_device to drivers/block/loop.c (private),
+  # but zram_ext.c still includes <linux/loop.h> and accesses lo->lo_backing_file
+  # Error: zram_ext.c:541:16 error: incomplete definition of type 'struct loop_device'
+  # Solution: restore old header from de924f856 if missing
+  local loop_headers=(
+    "kernel-6.6/include/linux/loop.h"
+    "${ROOT_DIR}/kernel-6.6/include/linux/loop.h"
+    "${ROOT_DIR}/Kernel-6.6/include/linux/loop.h"
+  )
+  for lh in "${loop_headers[@]}"; do
+    # Check if file exists in workspace or root
+    if [ ! -f "$lh" ]; then
+      log "loop.h missing at $lh, will create after rsync"
+    fi
+  done
+
+  # This function is called from inside kernel/ workspace after rsync,
+  # so we handle both root and workspace paths
+  local target_loop="kernel-6.6/include/linux/loop.h"
+  if [ ! -f "$target_loop" ]; then
+    log "Creating $target_loop from embedded old version"
+    ensure_dir "$(dirname "$target_loop")"
+    cat > "$target_loop" <<'LOOP_EOF'
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef _LINUX_LOOP_H
+#define _LINUX_LOOP_H
+
+#include <linux/blkdev.h>
+#include <linux/blk-mq.h>
+#include <linux/bio.h>
+#include <linux/mutex.h>
+#include <linux/workqueue.h>
+#include <uapi/linux/loop.h>
+
+struct loop_func_table;
+
+struct loop_device {
+	int		lo_number;
+	loff_t		lo_offset;
+	loff_t		lo_sizelimit;
+	int		lo_flags;
+	char		lo_file_name[LO_NAME_SIZE];
+	char		lo_crypt_name[LO_NAME_SIZE];
+	char		lo_encrypt_key[LO_KEY_SIZE];
+	int		lo_encrypt_key_size;
+	struct loop_func_table *lo_encryption;
+	__u32           lo_init[2];
+	uid_t		lo_key_owner;
+	int		(*ioctl)(struct loop_device *, int cmd,
+				 unsigned long arg);
+
+	struct file *	lo_backing_file;
+	struct block_device *lo_device;
+	void		*key_data;
+
+	gfp_t		old_gfp_mask;
+
+	spinlock_t		lo_lock;
+	int			lo_state;
+	struct kthread_worker	queue_worker;
+	struct kthread_work		rootcg_work;
+	struct kthread_work		free_work;
+	struct task_struct	*worker_task;
+	bool			use_dio;
+	bool			sysfs_inited;
+
+	struct request_queue	*lo_queue;
+	struct blk_mq_tag_set	tag_set;
+	struct gendisk		*lo_disk;
+	struct mutex		lo_mutex;
+	bool			idr_visible;
+};
+
+static inline bool is_loop_device(struct file *file)
+{
+	struct inode *i = file->f_mapping->host;
+	return S_ISBLK(i->i_mode) && MAJOR(i->i_rdev) == LOOP_MAJOR;
+}
+
+#endif /* _LINUX_LOOP_H */
+LOOP_EOF
+    ok "Created $target_loop"
+  else
+    ok "loop.h exists at $target_loop"
+  fi
+
+  # Also ensure root copy exists for future rsyncs
+  local root_loop="${ROOT_DIR}/kernel-6.6/include/linux/loop.h"
+  local root_loop_cap="${ROOT_DIR}/Kernel-6.6/include/linux/loop.h"
+  if [ -d "${ROOT_DIR}/kernel-6.6" ] && [ ! -f "$root_loop" ]; then
+    log "Copying loop.h to $root_loop"
+    ensure_dir "$(dirname "$root_loop")"
+    cp -v "$target_loop" "$root_loop" || true
+  fi
+  if [ -d "${ROOT_DIR}/Kernel-6.6" ] && [ ! -f "$root_loop_cap" ]; then
+    log "Copying loop.h to $root_loop_cap"
+    ensure_dir "$(dirname "$root_loop_cap")"
+    cp -v "$target_loop" "$root_loop_cap" || true
+  fi
+
+  # --- Fix 2: zsmalloc.c and other drivers MAX/MIN redefinition ---
+  # Error: zsmalloc.c:122:9 error: 'MAX' macro redefined [-Werror,-Wmacro-redefined]
+  # Error: rpmb-mtk.c:171:9 error: 'MIN' macro redefined
+  # New kernel's include/linux/minmax.h defines MIN/MAX, old drivers define their own
+  # Solution: remove custom MIN/MAX and include minmax.h
+  log "Fixing MIN/MAX redefinition in device modules"
+  local minmax_files=(
+    "kernel_device_modules-6.6/drivers/mm/zsmalloc.c"
+    "kernel_device_modules-6.6/drivers/char/rpmb/rpmb-mtk.c"
+  )
+  for zf in "${minmax_files[@]}"; do
+    if [ -f "$zf" ]; then
+      if grep -q "^#define[[:space:]]*MAX[[:space:]]*(" "$zf" || grep -q "^#define[[:space:]]*MIN[[:space:]]*(" "$zf"; then
+        log "Patching $zf to remove custom MIN/MAX macros"
+        sed -i '/^#define[[:space:]]*MAX[[:space:]]*(/d' "$zf" || true
+        sed -i '/^#define[[:space:]]*MIN[[:space:]]*(/d' "$zf" || true
+        if ! grep -q "#include <linux/minmax.h>" "$zf"; then
+          sed -i 's|#include <linux/kernel.h>|#include <linux/kernel.h>\n#include <linux/minmax.h>|' "$zf" || \
+          sed -i '1i #include <linux/minmax.h>' "$zf"
+        fi
+        ok "Patched $zf"
+      else
+        ok "$zf already fixed (no custom MIN/MAX)"
+      fi
+    fi
+  done
+
+  # Broader fix: remove MIN/MAX from all .c/.h files in device_modules that cause redefinition
+  # This is a safety net for other drivers (cpufreq_limit, ged_dvfs.h, etc.)
+  # Old drivers defined MAX(x,y) MIN(x,y) or MAX(a,b) MIN(a,b) which collides with new kernel's minmax.h
+  log "Broad MIN/MAX cleanup in drivers/"
+  find "kernel_device_modules-6.6/drivers" \( -name "*.c" -o -name "*.h" \) -type f | while read -r f; do
+    if grep -q "^#define[[:space:]]*MAX[[:space:]]*(" "$f" 2>/dev/null || \
+       grep -q "^#define[[:space:]]*MIN[[:space:]]*(" "$f" 2>/dev/null; then
+      # Avoid deleting MAX_BW_PROFILE etc - only delete macros with 2 args like MAX(x,y) or MAX(a,b)
+      if grep -q "^#define[[:space:]]*MAX[[:space:]]*([a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*,[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*)" "$f" || \
+         grep -q "^#define[[:space:]]*MIN[[:space:]]*([a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*,[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*)" "$f"; then
+        log "Cleaning $f"
+        sed -i '/^#define[[:space:]]*MAX[[:space:]]*([a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*,[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*)/d' "$f" || true
+        sed -i '/^#define[[:space:]]*MIN[[:space:]]*([a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*,[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*)/d' "$f" || true
+        if ! grep -q "linux/minmax.h" "$f"; then
+          sed -i '1i #include <linux/minmax.h>' "$f" || true
+        fi
+      fi
+    fi
+  done
+
+  # --- Fix 2a: stmmac VLA error with max_t ---
+  # Error: stmmac_main.c:2855:13: error: variable length array used [-Werror,-Wvla]
+  # int status[max_t(u32, MTL_MAX_TX_QUEUES, MTL_MAX_RX_QUEUES)];
+  # max_t expands to statement expression, not constant, causing VLA
+  local stmmac_file="kernel_device_modules-6.6/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c"
+  if [ -f "$stmmac_file" ]; then
+    if grep -q "status\[max_t" "$stmmac_file"; then
+      log "Patching $stmmac_file for VLA compat"
+      sed -i 's/int status\[max_t(u32, MTL_MAX_TX_QUEUES, MTL_MAX_RX_QUEUES)\];/int status[MTL_MAX_TX_QUEUES > MTL_MAX_RX_QUEUES ? MTL_MAX_TX_QUEUES : MTL_MAX_RX_QUEUES];/' "$stmmac_file" || true
+      ok "Patched $stmmac_file"
+    fi
+  fi
+
+  # --- Fix 2c: Samsung PM drivers - sec_thermistor Makefile missing and power.h private include ---
+  # Error: Unable to find sec_thermistor.ko, sec_pm_debug.ko, sec_wakeup_cpu_allocator.ko
+  # Root cause: drivers/samsung/pm/Makefile missing sec_thermistor/ subdirectory
+  # And sec_wakeup_cpu_allocator.c includes private kernel/power/power.h which doesn't exist in device_modules
+  local pm_makefile="kernel_device_modules-6.6/drivers/samsung/pm/Makefile"
+  if [ -f "$pm_makefile" ]; then
+    if ! grep -q "sec_thermistor" "$pm_makefile"; then
+      log "Patching $pm_makefile to include sec_thermistor/"
+      echo 'obj-$(CONFIG_SEC_PM_THERMISTOR)	+= sec_thermistor/' >> "$pm_makefile"
+      ok "Patched $pm_makefile"
+    fi
+  fi
+
+  local wakeup_file="kernel_device_modules-6.6/drivers/samsung/pm/sec_wakeup_cpu_allocator.c"
+  if [ -f "$wakeup_file" ]; then
+    if grep -q 'kernel/power/power.h' "$wakeup_file"; then
+      log "Patching $wakeup_file to remove private power.h include"
+      sed -i 's|#include "../../../kernel/power/power.h"|/* compat: removed private power.h for kernel-6.6 */|' "$wakeup_file" || true
+      ok "Patched $wakeup_file"
+    fi
+  fi
+
+  # --- Fix 2b: UFS_CMD_ERR removed in new kernel ---
+  # Error: ufs-sec-feature.c:1489:44: error: use of undeclared identifier 'UFS_CMD_ERR'
+  # Old kernel had UFS_CMD_SEND, UFS_CMD_COMP, UFS_CMD_ERR, UFS_DEV_COMP
+  # New kernel has only UFS_CMD_SEND, UFS_CMD_COMP, UFS_DEV_COMP (no ERR)
+  # Solution: define UFS_CMD_ERR as UFS_TM_ERR if missing
+  local ufs_file="kernel_device_modules-6.6/drivers/ufs/vendor/ufs-sec-feature.c"
+  if [ -f "$ufs_file" ]; then
+    if grep -q "UFS_CMD_ERR" "$ufs_file" && ! grep -q "#define UFS_CMD_ERR" "$ufs_file"; then
+      log "Patching $ufs_file for UFS_CMD_ERR compat"
+      # Insert compat define after ufs-sec-sysfs.h include
+      if grep -q "ufs-sec-sysfs.h" "$ufs_file"; then
+        sed -i '/#include "ufs-sec-sysfs.h"/a \\n/* Compat fix: UFS_CMD_ERR removed in new kernel */\n#ifndef UFS_CMD_ERR\n#define UFS_CMD_ERR UFS_TM_ERR\n#endif' "$ufs_file" || true
+      else
+        sed -i '1i /* Compat fix: UFS_CMD_ERR removed */\n#ifndef UFS_CMD_ERR\n#define UFS_CMD_ERR UFS_TM_ERR\n#endif' "$ufs_file" || true
+      fi
+      ok "Patched $ufs_file"
+    else
+      ok "$ufs_file already fixed or no UFS_CMD_ERR"
+    fi
+  fi
+
+  # --- Fix 3: Ensure Google-FDO exists and is valid ---
+  if [ -d "Google-FDO" ]; then
+    if [ -f "Google-FDO/kernel.afdo" ]; then
+      local size
+      size=$(stat -c%s "Google-FDO/kernel.afdo" 2>/dev/null || stat -f%z "Google-FDO/kernel.afdo" 2>/dev/null || echo 0)
+      if [ "$size" -lt 1000000 ]; then
+        warn "Google-FDO/kernel.afdo too small ($size bytes), may be invalid"
+      else
+        ok "Google-FDO/kernel.afdo valid ($size bytes)"
+      fi
+    else
+      warn "Google-FDO/kernel.afdo missing in workspace"
+    fi
+  fi
+}
+
+# ------------------------------------------------------------------------------
 # 5. Prepare kernel/ workspace (fix bazel sandbox symlink issues)
 # ------------------------------------------------------------------------------
 prepare_workspace() {
@@ -239,17 +465,29 @@ prepare_workspace() {
 
   # --- Google-FDO: external FDO profile must be inside kernel/ workspace for bazel ---
   # The label //Google-FDO:kernel.afdo is resolved from workspace root (kernel/), so we need kernel/Google-FDO
+  # Support both Google-FDO (new) and google-FDO (old) naming
+  local fdo_src=""
   if [ -d "${ROOT_DIR}/Google-FDO" ]; then
-    log "Syncing Google-FDO to kernel/Google-FDO for bazel"
+    fdo_src="${ROOT_DIR}/Google-FDO"
+  elif [ -d "${ROOT_DIR}/google-FDO" ]; then
+    fdo_src="${ROOT_DIR}/google-FDO"
+    warn "Found old google-FDO naming, using it but prefer Google-FDO"
+  fi
+
+  if [ -n "$fdo_src" ] && [ -d "$fdo_src" ]; then
+    log "Syncing $fdo_src to kernel/Google-FDO for bazel"
     rm -rf "Google-FDO" || true
     if command -v rsync >/dev/null 2>&1; then
-      rsync -a --copy-links "${ROOT_DIR}/Google-FDO/" "Google-FDO/" || cp -r "${ROOT_DIR}/Google-FDO" "Google-FDO"
+      rsync -a --copy-links "${fdo_src}/" "Google-FDO/" || cp -r "${fdo_src}" "Google-FDO"
     else
-      cp -r "${ROOT_DIR}/Google-FDO" "Google-FDO"
+      cp -r "${fdo_src}" "Google-FDO"
     fi
     ls -lh "Google-FDO/" || true
+    if [ ! -f "Google-FDO/kernel.afdo" ]; then
+      warn "kernel.afdo missing after sync"
+    fi
   else
-    warn "Google-FDO not found at ${ROOT_DIR}/Google-FDO"
+    warn "Google-FDO not found at ${ROOT_DIR}/Google-FDO nor google-FDO"
   fi
 
   # Standard symlinks required by kleaf
@@ -267,7 +505,7 @@ prepare_workspace() {
   done
 
   # --- mkbootimg fix ---
-  if [ ! -e "tools/mkbootimg" ] || [ -L "tools/mkbootimg" ] && [ ! -e "$(readlink -f "tools/mkbootimg" 2>/dev/null || echo "")" ]; then
+  if [ ! -e "tools/mkbootimg" ] || { [ -L "tools/mkbootimg" ] && [ ! -e "$(readlink -f "tools/mkbootimg" 2>/dev/null || echo "")" ]; }; then
     warn "tools/mkbootimg missing/broken, attempting fix"
     ls -la "tools/" || true
     # Try to link from aosp-kernel
@@ -300,51 +538,89 @@ prepare_workspace() {
   # Fix 2: patch defconfigs to disable module signing (robust workaround for custom kernels)
   log "Ensuring mtk_signing_key.pem and module sig workaround"
   local mtk_key_src=""
-  if [ -f "${ROOT_DIR}/kernel/kernel_device_modules-6.6/certs/mtk_signing_key.pem" ]; then
-    mtk_key_src="${ROOT_DIR}/kernel/kernel_device_modules-6.6/certs/mtk_signing_key.pem"
-  elif [ -f "kernel_device_modules-6.6/certs/mtk_signing_key.pem" ]; then
-    mtk_key_src="$(pwd)/kernel_device_modules-6.6/certs/mtk_signing_key.pem"
-  elif [ -f "${ROOT_DIR}/kernel-6.6/certs/mtk_signing_key.pem" ]; then
-    mtk_key_src="${ROOT_DIR}/kernel-6.6/certs/mtk_signing_key.pem"
-  fi
+  # Search in order of preference
+  for candidate in \
+    "${ROOT_DIR}/kernel/kernel_device_modules-6.6/certs/mtk_signing_key.pem" \
+    "$(pwd)/kernel_device_modules-6.6/certs/mtk_signing_key.pem" \
+    "${ROOT_DIR}/kernel-6.6/certs/mtk_signing_key.pem" \
+    "${ROOT_DIR}/Kernel-6.6/certs/mtk_signing_key.pem" \
+    "kernel-6.6/certs/mtk_signing_key.pem"; do
+    if [ -f "$candidate" ]; then
+      mtk_key_src="$candidate"
+      break
+    fi
+  done
+
   if [ -n "$mtk_key_src" ] && [ -f "$mtk_key_src" ]; then
     log "Found MTK key at $mtk_key_src"
     ensure_dir "${ROOT_DIR}/kernel-6.6/certs"
     cp -v "$mtk_key_src" "${ROOT_DIR}/kernel-6.6/certs/mtk_signing_key.pem" 2>/dev/null || true
+    if [ -d "${ROOT_DIR}/Kernel-6.6" ]; then
+      ensure_dir "${ROOT_DIR}/Kernel-6.6/certs"
+      cp -v "$mtk_key_src" "${ROOT_DIR}/Kernel-6.6/certs/mtk_signing_key.pem" 2>/dev/null || true
+    fi
     ensure_dir "kernel-6.6/certs"
     cp -v "$mtk_key_src" "kernel-6.6/certs/mtk_signing_key.pem" 2>/dev/null || true
     ensure_dir "kernel_device_modules-6.6/certs"
     cp -v "$mtk_key_src" "kernel_device_modules-6.6/certs/mtk_signing_key.pem" 2>/dev/null || true
+  else
+    warn "MTK signing key not found in any location, module signing may fail"
+    ls -lh "kernel-6.6/certs/" "kernel_device_modules-6.6/certs/" 2>&1 | head -n 20 || true
   fi
 
   # Fix 2: patch gki_defconfig to disable module sig (if not already)
   if [ -f "kernel-6.6/arch/arm64/configs/gki_defconfig" ]; then
     log "Patching gki_defconfig to disable MODULE_SIG"
+    # Disable all module sig options robustly
     sed -i 's/^CONFIG_MODULE_SIG=y/# CONFIG_MODULE_SIG is not set/' "kernel-6.6/arch/arm64/configs/gki_defconfig" || true
+    sed -i 's/^CONFIG_MODULE_SIG_FORCE=y/# CONFIG_MODULE_SIG_FORCE is not set/' "kernel-6.6/arch/arm64/configs/gki_defconfig" || true
+    sed -i 's/^CONFIG_MODULE_SIG_ALL=y/# CONFIG_MODULE_SIG_ALL is not set/' "kernel-6.6/arch/arm64/configs/gki_defconfig" || true
+    sed -i 's/^CONFIG_MODULE_SIG_SHA512=y/# CONFIG_MODULE_SIG_SHA512 is not set/' "kernel-6.6/arch/arm64/configs/gki_defconfig" || true
     sed -i 's/^CONFIG_MODULE_SIG_PROTECT=y/# CONFIG_MODULE_SIG_PROTECT is not set/' "kernel-6.6/arch/arm64/configs/gki_defconfig" || true
+    # Also handle =y with possible spaces
+    sed -i 's/^CONFIG_MODULE_SIG[[:space:]]*=.*/# CONFIG_MODULE_SIG is not set/' "kernel-6.6/arch/arm64/configs/gki_defconfig" || true
+    # Ensure it's disabled at end if not present
+    if ! grep -q "CONFIG_MODULE_SIG" "kernel-6.6/arch/arm64/configs/gki_defconfig"; then
+      echo "# CONFIG_MODULE_SIG is not set" >> "kernel-6.6/arch/arm64/configs/gki_defconfig"
+    fi
   fi
+
   # Patch mediatek-bazel_defconfig to use auto-generated key
   for defconfig_path in "kernel_device_modules-6.6/arch/arm64/configs/mediatek-bazel_defconfig"; do
     if [ -f "$defconfig_path" ]; then
       log "Patching $defconfig_path to use certs/signing_key.pem"
       sed -i 's|CONFIG_MODULE_SIG_KEY=.*|CONFIG_MODULE_SIG_KEY="certs/signing_key.pem"|' "$defconfig_path" || true
+      # Also disable sig if needed (will be overridden by overlay)
+      # sed -i 's/^CONFIG_MODULE_SIG=y/# CONFIG_MODULE_SIG is not set/' "$defconfig_path" || true
     fi
   done
-  # Create disable_module_sig.config fragment if not exists
+
+  # Create disable_module_sig.config fragment if not exists or incomplete
   local disable_sig_fragment="kernel_device_modules-6.6/kernel/configs/disable_module_sig.config"
-  if [ ! -f "$disable_sig_fragment" ]; then
-    log "Creating $disable_sig_fragment"
-    ensure_dir "$(dirname "$disable_sig_fragment")"
-    cat > "$disable_sig_fragment" <<'EOF'
+  log "Ensuring $disable_sig_fragment"
+  ensure_dir "$(dirname "$disable_sig_fragment")"
+  cat > "$disable_sig_fragment" <<'EOF'
 # Disable module signing for custom kernel builds - fixes bazel sandbox sign-file failure
 CONFIG_MODULE_SIG=n
+# CONFIG_MODULE_SIG_FORCE is not set
+# CONFIG_MODULE_SIG_ALL is not set
+# CONFIG_MODULE_SIG_SHA512 is not set
+CONFIG_MODULE_SIG_HASH=""
+CONFIG_MODULE_SIG_KEY=""
+CONFIG_SYSTEM_TRUSTED_KEYRING=n
 EOF
-  fi
+  ok "Created $disable_sig_fragment"
+  cat "$disable_sig_fragment"
+
   ls -lh "kernel-6.6/certs/mtk_signing_key.pem" "kernel_device_modules-6.6/certs/mtk_signing_key.pem" "$disable_sig_fragment" 2>&1 || true
+
+  # Apply compatibility fixes (loop.h, zsmalloc, etc.)
+  apply_compat_fixes
 
   # List critical files for debug
   ls -lh "kernel-6.6/build.config.common" 2>/dev/null || warn "kernel-6.6/build.config.common not found"
   ls -lh "prebuilts" 2>/dev/null || true
+  ls -lh "Google-FDO/kernel.afdo" 2>/dev/null || warn "Google-FDO/kernel.afdo not found"
 
   popd >/dev/null
   ok "Workspace prepared"
@@ -521,7 +797,7 @@ collect_image() {
   else
     warn "Primary Image not found at $primary_src, searching fallback"
     local found
-    found=$(find out -name "Image" -type f -type f 2>/dev/null | grep -v ".*\.d$" | head -n 1 || true)
+    found=$(find out -name "Image" -type f 2>/dev/null | grep -v ".*\.d$" | head -n 1 || true)
     if [ -n "$found" ] && [ -f "$found" ]; then
       cp -v "$found" "$dest"
       ok "Copied fallback $found -> $dest"

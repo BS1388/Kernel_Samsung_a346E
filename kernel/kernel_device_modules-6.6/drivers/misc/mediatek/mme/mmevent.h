@@ -12,6 +12,7 @@ extern "C" {
 #endif
 
 #include <linux/sched/clock.h>
+#include <linux/minmax.h>
 #include <linux/sched.h>
 #include <linux/bug.h>
 #include <linux/spinlock.h>
@@ -128,8 +129,6 @@ enum data_flag_t {
 	DATA_FLAG_INT_POINTER = 6,
 	DATA_FLAG_CODE_REGION_STRING = 7
 };
-
-#define MIN(x, y)   ((x) <= (y) ? (x) : (y))
 #define FLAG_INT_POINTER_SIZE 16
 #define POINTER_SIZE 8
 #define U64_POINTER 1

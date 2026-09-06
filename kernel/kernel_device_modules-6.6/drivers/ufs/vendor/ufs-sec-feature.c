@@ -11,6 +11,14 @@
 #include "ufs-sec-feature.h"
 #include "ufs-sec-sysfs.h"
 
+/* Compat fix: UFS_CMD_ERR removed in new kernel (was in old ufs.h) */
+#ifndef UFS_CMD_ERR
+#define UFS_CMD_ERR UFS_TM_ERR
+#endif
+#ifndef UFS_CMD_SEND
+#define UFS_CMD_SEND UFS_TM_SEND
+#endif
+
 #include <asm/unaligned.h>
 #include <trace/hooks/ufshcd.h>
 #include <scsi/scsi_cmnd.h>

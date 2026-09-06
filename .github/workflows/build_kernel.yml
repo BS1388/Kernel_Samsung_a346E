@@ -24,10 +24,17 @@ on:
         default: false
   push:
     branches:
-      - arena/01a07254-kernel-samsung-a346e
+      - A346E
+      - a346E-Stock
       - Google
       - Test-Build
-      - a346E-Stock
+      - "arena/**"
+      - arena/01a07254-kernel-samsung-a346e
+      - arena/01a0788f-kernel-samsung-a346e
+  pull_request:
+    branches:
+      - A346E
+      - "arena/**"
 
 # Node.js 24 fix: checkout@v6 and upload-artifact@v6 both run on node24
 # https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
@@ -62,7 +69,7 @@ jobs:
         id: detect
         run: |
           set -eux
-          # Support both casings (Kernel-6.6 vs kernel-6.6)
+          # Support both casings (Kernel-6.6 vs kernel-6.6) and both FDO casings
           if [ -f "Kernel-6.6/Makefile" ]; then
             REAL_DIR="Kernel-6.6"
           elif [ -f "kernel-6.6/Makefile" ]; then
@@ -73,16 +80,31 @@ jobs:
             exit 1
           fi
           echo "Detected kernel dir: $REAL_DIR"
-          echo "G_KERNEL=${{ github.workspace }}/$REAL_DIR" >> $GITHUB_ENV
+          # Use $GITHUB_WORKSPACE for shell expansion, not GH expression mixed with shell var
+          echo "G_KERNEL=$GITHUB_WORKSPACE/$REAL_DIR" >> $GITHUB_ENV
           echo "REAL_DIR=$REAL_DIR" >> $GITHUB_ENV
           echo "real_dir=$REAL_DIR" >> $GITHUB_OUTPUT
 
           # Ensure kernel/kernel-6.6 exists as real dir for bazel (avoid symlink outside workspace)
-          # Workflow creates symlink, but build_kernel.sh will convert to real dir
+          # Workflow creates symlink, but build_kernel.sh will convert to real dir via rsync
           rm -f kernel/kernel-6.6
           ln -sfn "../$REAL_DIR" kernel/kernel-6.6
           ls -la kernel/kernel-6.6
           echo "GKI defconfig exists: $(ls -lh $REAL_DIR/arch/arm64/configs/gki_defconfig || echo no)"
+
+          # Verify Google-FDO (handle both casings)
+          if [ -d "Google-FDO" ]; then
+            echo "Google-FDO found: $(ls -lh Google-FDO/)"
+          elif [ -d "google-FDO" ]; then
+            echo "google-FDO (old casing) found, renaming to Google-FDO"
+            mv google-FDO Google-FDO || true
+            ls -lh Google-FDO/
+          else
+            echo "::warning::Google-FDO not found, FDO build may fail"
+          fi
+          if [ -f "Google-FDO/kernel.afdo" ]; then
+            echo "FDO profile size: $(du -h Google-FDO/kernel.afdo | awk '{print $1}')"
+          fi
 
       # ======================================================================
       # 2. System Prep
@@ -92,9 +114,12 @@ jobs:
           set -eux
           echo "=== Before cleanup ==="
           df -h
-          # Remove large unnecessary packages (keep essential build tools)
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" /opt/hostedtoolcache/CodeQL || true
-          sudo apt-get remove --purge -y "php*" "dotnet*" "mysql*%" "nodejs*" "firefox*" "mongodb*" "postgresql*" "azure-cli*" "google-chrome*" "google-cloud*" || true
+          # Remove large unnecessary packages - be selective to avoid deleting node24 needed for actions
+          # Don't delete entire AGENT_TOOLSDIRECTORY, only large known caches
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL || true
+          # Clean only specific large toolcache subdirs, keep node
+          sudo rm -rf /opt/hostedtoolcache/go /opt/hostedtoolcache/Ruby /opt/hostedtoolcache/Python/3.9* /opt/hostedtoolcache/Python/3.10* || true
+          sudo apt-get remove --purge -y "php*" "dotnet*" "mysql*%" "firefox*" "mongodb*%" "postgresql*%" "azure-cli*" "google-chrome*" "google-cloud-cli" || true
           sudo apt-get autoremove -y || true
           sudo apt-get clean || true
           echo "=== After cleanup ==="
@@ -169,7 +194,7 @@ jobs:
           echo "External deps ready"
 
       # ======================================================================
-      # 4. Patches (Permissive, Custom, SUSFS)
+      # 4. Patches (Permissive, Custom, SUSFS) + Compat Fixes
       # ======================================================================
       - name: Apply permissive patch
         if: env.PERMISSIVE == 'true'
@@ -180,13 +205,26 @@ jobs:
           PATCH_FILE="${{ github.workspace }}/Permissive/selinux-make-permissive.patch"
           [ -f "$PATCH_FILE" ] || { echo "::error::Not found $PATCH_FILE"; ls -la "${{ github.workspace }}/Permissive/"; exit 1; }
 
-          if grep -q "selinux_enforcing_boot 0" security/selinux/hooks.c; then
-            echo "Permissive already applied, skipping"
-          else
-            patch -p1 < "$PATCH_FILE"
-            echo "Permissive patch applied successfully"
+          # More robust check: look for enforcing=0 or permissive change
+          if grep -q "selinux_enforcing_boot.*0\|return.*0.*permissive\|enforcing.*permissive" security/selinux/hooks.c 2>/dev/null; then
+            echo "Permissive appears already applied, checking..."
+            grep -n "selinux_enforcing_boot" security/selinux/hooks.c | head -n 5 || true
           fi
-          grep -n "selinux_enforcing_boot" security/selinux/hooks.c | head -n 5
+
+          if ! patch -p1 --dry-run < "$PATCH_FILE" 2>&1 | grep -q "already applied\|Skipping"; then
+            patch -p1 < "$PATCH_FILE" || {
+              if grep -q "selinux_enforcing_boot 0" security/selinux/hooks.c; then
+                echo "Patch already applied (grep confirmed)"
+              else
+                echo "::error::Failed to apply permissive patch"
+                exit 1
+              fi
+            }
+            echo "Permissive patch applied successfully"
+          else
+            echo "Permissive patch already applied, skipping"
+          fi
+          grep -n "selinux_enforcing_boot" security/selinux/hooks.c | head -n 5 || true
 
       - name: Apply custom patches from patch/ folder
         if: env.CUSTOM_PATCH == 'true'
@@ -230,10 +268,21 @@ jobs:
           SUSFS_DIR="${{ env.G_EXT }}/susfs4ksu"
           [ -d "$SUSFS_DIR" ] || { echo "::error::susfs4ksu not found"; exit 1; }
 
-          # Copy SUSFS headers
+          # Copy SUSFS headers - but preserve loop.h fix if exists
           echo "Copying SUSFS headers"
+          # Backup loop.h if exists before SUSFS overwrite
+          if [ -f "${{ env.G_KERNEL }}/include/linux/loop.h" ]; then
+            cp -v "${{ env.G_KERNEL }}/include/linux/loop.h" /tmp/loop.h.bak || true
+          fi
           cp -v "$SUSFS_DIR"/kernel_patches/include/linux/* "${{ env.G_KERNEL }}/include/linux/" || echo "No linux headers to copy"
           cp -v "$SUSFS_DIR"/kernel_patches/fs/* "${{ env.G_KERNEL }}/fs/" || echo "No fs headers to copy"
+          # Restore loop.h if SUSFS overwrote it with missing file or if backup exists and current is missing/incomplete
+          if [ -f /tmp/loop.h.bak ]; then
+            if [ ! -f "${{ env.G_KERNEL }}/include/linux/loop.h" ] || ! grep -q "lo_backing_file" "${{ env.G_KERNEL }}/include/linux/loop.h"; then
+              echo "Restoring loop.h from backup after SUSFS copy"
+              cp -v /tmp/loop.h.bak "${{ env.G_KERNEL }}/include/linux/loop.h" || true
+            fi
+          fi
 
           cd "${{ env.G_KERNEL }}"
 
@@ -246,6 +295,105 @@ jobs:
           patch -p1 < "${{ env.G_EXT }}/kernel_patches/wild/susfs_fix_patches/v1.5.12/1_fix_base.c.patch" || echo "::warning::fix_base.c failed"
 
           echo "SUSFS patches applied"
+
+      - name: Apply kernel compat fixes (loop.h, zsmalloc)
+        run: |
+          set -eux
+          echo "Applying compatibility fixes for kernel-6.6 vs device_modules"
+          KDIR="${{ env.G_KERNEL }}"
+          cd "$KDIR"
+
+          # Fix 1: loop.h - ensure it exists (removed in new kernel, needed by zram_ext.c)
+          if [ ! -f "include/linux/loop.h" ] || ! grep -q "lo_backing_file" "include/linux/loop.h"; then
+            echo "loop.h missing or incomplete, restoring from repo"
+            if [ -f "${{ github.workspace }}/kernel-6.6/include/linux/loop.h" ]; then
+              cp -v "${{ github.workspace }}/kernel-6.6/include/linux/loop.h" include/linux/loop.h
+            elif [ -f "${{ github.workspace }}/Kernel-6.6/include/linux/loop.h" ]; then
+              cp -v "${{ github.workspace }}/Kernel-6.6/include/linux/loop.h" include/linux/loop.h
+            else
+              echo "No loop.h in repo, creating embedded version"
+              cat > include/linux/loop.h <<'LOOP_EOF'
+          /* SPDX-License-Identifier: GPL-2.0 */
+          #ifndef _LINUX_LOOP_H
+          #define _LINUX_LOOP_H
+          #include <linux/blkdev.h>
+          #include <linux/blk-mq.h>
+          #include <linux/bio.h>
+          #include <linux/mutex.h>
+          #include <linux/workqueue.h>
+          #include <uapi/linux/loop.h>
+          struct loop_func_table;
+          struct loop_device {
+          	int		lo_number;
+          	loff_t		lo_offset;
+          	loff_t		lo_sizelimit;
+          	int		lo_flags;
+          	char		lo_file_name[LO_NAME_SIZE];
+          	char		lo_crypt_name[LO_NAME_SIZE];
+          	char		lo_encrypt_key[LO_KEY_SIZE];
+          	int		lo_encrypt_key_size;
+          	struct loop_func_table *lo_encryption;
+          	__u32           lo_init[2];
+          	uid_t		lo_key_owner;
+          	int		(*ioctl)(struct loop_device *, int cmd, unsigned long arg);
+          	struct file *	lo_backing_file;
+          	struct block_device *lo_device;
+          	void		*key_data;
+          	gfp_t		old_gfp_mask;
+          	spinlock_t		lo_lock;
+          	int			lo_state;
+          	struct kthread_worker	queue_worker;
+          	struct kthread_work		rootcg_work;
+          	struct kthread_work		free_work;
+          	struct task_struct	*worker_task;
+          	bool			use_dio;
+          	bool			sysfs_inited;
+          	struct request_queue	*lo_queue;
+          	struct blk_mq_tag_set	tag_set;
+          	struct gendisk		*lo_disk;
+          	struct mutex		lo_mutex;
+          	bool			idr_visible;
+          };
+          static inline bool is_loop_device(struct file *file)
+          {
+          	struct inode *i = file->f_mapping->host;
+          	return S_ISBLK(i->i_mode) && MAJOR(i->i_rdev) == LOOP_MAJOR;
+          }
+          #endif
+          LOOP_EOF
+            fi
+          fi
+          ls -lh include/linux/loop.h
+          grep -n "lo_backing_file" include/linux/loop.h | head -n 3
+
+          # Fix 2: zsmalloc.c MAX redefinition (if this file is in kernel dir - usually in device_modules)
+          # Check both possible locations
+          for zf in "../kernel/kernel_device_modules-6.6/drivers/mm/zsmalloc.c" "kernel_device_modules-6.6/drivers/mm/zsmalloc.c" "../kernel-6.6/mm/zsmalloc.c" "mm/zsmalloc.c"; do
+            if [ -f "$zf" ]; then
+              echo "Checking $zf for MAX redefinition"
+              if grep -q "^#define MAX(a, b)" "$zf"; then
+                echo "Patching $zf"
+                sed -i '/^#define MAX(a, b)/d' "$zf"
+                if ! grep -q "linux/minmax.h" "$zf"; then
+                  sed -i 's|#include <linux/kernel.h>|#include <linux/kernel.h>\n#include <linux/minmax.h>|' "$zf" || sed -i '1i #include <linux/minmax.h>' "$zf"
+                fi
+              fi
+            fi
+          done
+
+          # Also patch in workspace kernel/ dir for build
+          if [ -f "${{ github.workspace }}/kernel/kernel_device_modules-6.6/drivers/mm/zsmalloc.c" ]; then
+            ZM="${{ github.workspace }}/kernel/kernel_device_modules-6.6/drivers/mm/zsmalloc.c"
+            if grep -q "^#define MAX(a, b)" "$ZM"; then
+              echo "Patching workspace $ZM"
+              sed -i '/^#define MAX(a, b)/d' "$ZM"
+              if ! grep -q "linux/minmax.h" "$ZM"; then
+                sed -i 's|#include <linux/kernel.h>|#include <linux/kernel.h>\n#include <linux/minmax.h>|' "$ZM" || sed -i '1i #include <linux/minmax.h>' "$ZM"
+              fi
+            fi
+          fi
+
+          echo "Compat fixes applied"
 
       # ======================================================================
       # 5. KernelSU
@@ -299,11 +447,17 @@ jobs:
           set -eux
           echo "Removing protected_exports_list for SUSFS compatibility"
           # Only touch BUILD.bazel files in kernel source, not in external_deps/out
-          grep -rl "protected_exports_list" --include="BUILD.bazel" kernel-6.6/ Kernel-6.6/ 2>/dev/null | while read -r f; do
-            echo "Patching $f"
-            sed -i '/"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",\?/d' "$f" || true
+          # Search in both possible casings and in kernel/ workspace
+          for search_dir in kernel-6.6 Kernel-6.6 kernel/kernel-6.6; do
+            if [ -d "$search_dir" ]; then
+              echo "Searching $search_dir"
+              grep -rl "protected_exports_list" --include="BUILD.bazel" "$search_dir" 2>/dev/null | while read -r f; do
+                echo "Patching $f"
+                sed -i '/"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",\?/d' "$f" || true
+              done
+              find "$search_dir" -iname "abi_gki_protected_exports*" -type f -delete 2>/dev/null || true
+            fi
           done
-          find kernel-6.6/ Kernel-6.6/ -iname "abi_gki_protected_exports*" -type f -delete 2>/dev/null || true
           echo "Protected exports cleanup done"
 
       - name: Configure defconfig
@@ -402,7 +556,21 @@ jobs:
             echo "  Custom patches  :"
             ls -lh "${{ github.workspace }}/patch/" || true
           fi
-          echo "  FDO Profile     : Google-FDO/kernel.afdo ($(du -h Google-FDO/kernel.afdo 2>/dev/null | awk '{print $1}' || echo missing))"
+          # Handle both casings for FDO
+          FDO_PATH="Google-FDO/kernel.afdo"
+          [ -f "$FDO_PATH" ] || FDO_PATH="google-FDO/kernel.afdo"
+          echo "  FDO Profile     : $FDO_PATH ($(du -h "$FDO_PATH" 2>/dev/null | awk '{print $1}' || echo missing))"
+
+          # Verify critical compat fixes before build
+          echo "=== Pre-build compat check ==="
+          ls -lh "${{ env.G_KERNEL }}/include/linux/loop.h" || echo "loop.h missing!"
+          grep -n "lo_backing_file" "${{ env.G_KERNEL }}/include/linux/loop.h" | head -n 2 || echo "loop.h incomplete!"
+          if [ -f "kernel/kernel_device_modules-6.6/drivers/mm/zsmalloc.c" ]; then
+            if grep -q "^#define MAX(a, b)" "kernel/kernel_device_modules-6.6/drivers/mm/zsmalloc.c"; then
+              echo "::warning::zsmalloc.c still has custom MAX, patching now"
+              sed -i '/^#define MAX(a, b)/d' "kernel/kernel_device_modules-6.6/drivers/mm/zsmalloc.c"
+            fi
+          fi
 
           # Run build and tee log
           bash ./build_kernel.sh 2>&1 | tee build.log
@@ -424,7 +592,7 @@ jobs:
           fi
 
           # Version info
-          SEC_VER=$(grep SEC_BUILDNUMBER build_kernel.sh | tail -n1 | cut -d'"' -f2 || echo "unknown")
+          SEC_VER=$(grep -E "SEC_BUILDNUMBER|BUILD_NUMBER" "${{ env.G_KERNEL }}/Makefile" 2>/dev/null | head -n1 || echo "unknown")
           {
             echo "Based on $SEC_VER Samsung Open Source"
             echo "KSU Variant: ${{ env.KSU_VAR }}"
@@ -432,6 +600,7 @@ jobs:
             echo "Custom Patches: ${{ env.CUSTOM_PATCH }}"
             echo "SHA: ${{ github.sha }}"
             echo "Date: $(date -u)"
+            echo "FDO: $(ls -lh Google-FDO/kernel.afdo 2>/dev/null || ls -lh google-FDO/kernel.afdo 2>/dev/null || echo missing)"
             if [ "${{ env.CUSTOM_PATCH }}" = "true" ]; then
               echo "--- Custom Patches Applied ---"
               ls -1 "${{ github.workspace }}/patch/"*.patch 2>/dev/null | xargs -n1 basename 2>/dev/null || echo "No patches"
@@ -471,8 +640,31 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eux
-          tail -n 4000 build.log > build_tail.log || true
-          BODY=$(tail -c 60000 build_tail.log || echo "no log")
+          echo "=== Build log size ==="
+          wc -l build.log || true
+          du -h build.log || true
+
+          # Capture last 8000 lines
+          tail -n 8000 build.log > build_tail.log || true
+
+          # Extract actual errors - this is more useful than just tail
+          echo "=== Extracting errors ==="
+          grep -n -E "error:|ERROR:|Unable to find|FAILED|failed to build" build.log | tail -n 500 > errors.log || true
+          cat errors.log || true
+
+          # Combine: errors + tail for context
+          echo "=== Combined log for issue ==="
+          {
+            echo "---- ERRORS (grep) ----"
+            cat errors.log
+            echo ""
+            echo "---- TAIL (last 8000 lines) ----"
+            cat build_tail.log
+          } > combined.log
+
+          # Limit to 60KB for issue body (GitHub limit)
+          BODY=$(tail -c 60000 combined.log || echo "no log")
+
           cat > issue_body.txt <<EOF
           Build failed for run ${{ github.run_id }}
           Commit: ${{ github.sha }}
@@ -481,15 +673,25 @@ jobs:
           Permissive: ${{ env.PERMISSIVE }}
           Custom Patches: ${{ env.CUSTOM_PATCH }}
 
+          ### Errors extracted:
+          \`\`\`
+          $(cat errors.log | head -n 100)
+          \`\`\`
+
+          ### Full tail:
           \`\`\`
           $BODY
           \`\`\`
 
           [View run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
           EOF
+
           gh issue create \
             --title "Build failed ${{ github.run_id }} [${{ env.KSU_VAR }}|${{ env.PERMISSIVE == 'true' && 'permissive' || 'enforcing' }}|${{ env.CUSTOM_PATCH == 'true' && 'custom' || 'nocustom' }}]" \
             --body-file issue_body.txt || \
           gh api repos/${{ github.repository }}/issues -X POST \
             -f title="Build failed ${{ github.run_id }}" \
             --raw-field body="$(cat issue_body.txt)" || true
+
+          # Also save combined.log as artifact for debugging (if upload works)
+          cp combined.log build_combined.log || true

@@ -7,3 +7,4 @@
 
 obj-$(CONFIG_SEC_PM_DEBUG)	+= sec_pm_debug.o
 obj-$(CONFIG_SEC_WAKEUP_CPU_ALLOCATOR)		+= sec_wakeup_cpu_allocator.o
+obj-$(CONFIG_SEC_PM_THERMISTOR)	+= sec_thermistor/

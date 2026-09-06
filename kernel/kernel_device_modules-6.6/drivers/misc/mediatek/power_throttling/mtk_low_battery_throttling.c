@@ -4,6 +4,7 @@
  * Author: Samuel Hsieh <samuel.hsieh@mediatek.com>
  */
 #include <linux/device.h>
+#include <linux/minmax.h>
 #include <linux/module.h>
 #include <linux/notifier.h>
 #include <linux/of.h>
@@ -37,7 +38,6 @@
 #define MIN_LBAT_VOLT 2000
 #define LBAT_PMIC_MAX_LEVEL LOW_BATTERY_LEVEL_3
 #define LBAT_PMIC_LEVEL_NUM (LOW_BATTERY_LEVEL_3+1)
-#define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define VOLT_L_STR "thd-volts-l"
 #define VOLT_H_STR "thd-volts-h"
 

@@ -1,3 +1,4 @@
+#include <linux/minmax.h>
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2019 MediaTek Inc.
@@ -178,10 +179,6 @@
  **************************************************/
 #define VOLT_NORMALIZATION(volt)	\
 	((volt % 625) ? (volt - (volt % 625) + 625) : volt)
-#ifndef MIN
-#define MIN(x, y)	(((x) < (y)) ? (x) : (y))
-#endif
-
 #define GPUOP(khz, vgpu, vsram, post_divider, aging_margin)	\
 	{							\
 		.gpufreq_khz = khz,				\

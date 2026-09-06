@@ -12,7 +12,8 @@
 #include <linux/of.h>
 #include <trace/events/power.h>
 #include <uapi/linux/sched/types.h>
-#include "../../../kernel/power/power.h"
+/* compat: removed private power.h include for kernel-6.6 */
+/* #include "../../../kernel/power/power.h" */
 
 
 #undef pr_fmt

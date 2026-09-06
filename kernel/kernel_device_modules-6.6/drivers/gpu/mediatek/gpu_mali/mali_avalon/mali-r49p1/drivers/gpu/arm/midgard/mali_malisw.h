@@ -27,6 +27,7 @@
 #define _MALISW_H_
 
 #include <linux/version.h>
+#include <linux/minmax.h>
 
 /**
  * MIN - Return the lesser of two values.
@@ -36,8 +37,6 @@
  * As a macro it may evaluate its arguments more than once.
  * Refer to MAX macro for more details
  */
-#define MIN(x, y) ((x) < (y) ? (x) : (y))
-
 /**
  * MAX - Return the greater of two values.
  * @x: value1
@@ -50,8 +49,6 @@
  * to retrieve the min and max of two values, consider using a conditional swap
  * instead.
  */
-#define MAX(x, y) ((x) < (y) ? (y) : (x))
-
 /**
  * CSTD_UNUSED - Function-like macro for suppressing unused variable warnings.
  *

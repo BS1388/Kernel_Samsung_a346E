@@ -4,6 +4,7 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/minmax.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/proc_fs.h>
@@ -32,9 +33,6 @@
  ****************************************************************************/
 #define DEFAULT_AVG_WINDOW		(50)
 #define IDD_TBL_DBG
-
-#define MAX(a, b)			((a) >= (b) ? (a) : (b))
-#define MIN(a, b)			((a) >= (b) ? (b) : (a))
 
 #define SWPM_OPS (swpm_m.plat_ops)
 /****************************************************************************

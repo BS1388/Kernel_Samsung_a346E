@@ -5,6 +5,7 @@
 
 #include <linux/version.h>
 #include <linux/kernel.h>
+#include <linux/minmax.h>
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/kobject.h>
@@ -24,7 +25,6 @@
  *  Macro Definitions
  ****************************************************************************/
 #ifndef MAX
-#define MAX(a, b)		((a) >= (b) ? (a) : (b))
 #endif
 
 /* TMC interface */

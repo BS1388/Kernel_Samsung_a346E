@@ -40,6 +40,7 @@
 #define _SYNAPTICS_TCM2_C_RUNTIME_H_
 
 #include <linux/version.h>
+#include <linux/minmax.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/input.h>
@@ -136,12 +137,9 @@ extern struct device *syna_request_managed_device(void);
  * @brief: GET_BIT
  *         Return the value of target bit
  */
-#define MAX(a, b) \
 	({__typeof__(a) _a = (a); \
 	__typeof__(b) _b = (b); \
 	_a > _b ? _a : _b; })
-
-#define MIN(a, b) \
 	({__typeof__(a) _a = (a); \
 	__typeof__(b) _b = (b); \
 	_a < _b ? _a : _b; })

@@ -5,6 +5,7 @@
 
 #include <linux/version.h>
 #include <linux/kernel.h>
+#include <linux/minmax.h>
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/kobject.h>
@@ -57,9 +58,6 @@ static int cl_bcct_klog_on;
 
 static kuid_t uid = KUIDT_INIT(0);
 static kgid_t gid = KGIDT_INIT(1000);
-
-#define MIN(_a_, _b_) ((_a_) > (_b_) ? (_b_) : (_a_))
-#define MAX(_a_, _b_) ((_a_) > (_b_) ? (_a_) : (_b_))
 
 /* Battery & Charger Status*/
 static int bat_info_uisoc; /* battery UI soc */

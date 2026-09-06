@@ -16,6 +16,7 @@
   */
 
 #include "goodix_ts_core.h"
+#include <linux/minmax.h>
 #include <linux/rtc.h>
 #include <linux/timer.h>
 #include <linux/version.h>
@@ -122,7 +123,6 @@
 
 
 #define ABS(val)			((val < 0)? -(val) : val)
-#define MAX(a, b)			((a > b)? a : b)
 
 static bool module_initialized;
 

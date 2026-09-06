@@ -11,6 +11,7 @@ extern "C" {
 #endif
 
 #include <linux/module.h>
+#include <linux/minmax.h>
 #include <linux/platform_device.h>
 #include <linux/cpufreq.h>
 #include <linux/mutex.h>
@@ -76,14 +77,6 @@ extern "C" {
 #define for_each_ppm_clients(i)		for (i = 0; i < NR_PPM_CLIENTS; i++)
 
 /* operation */
-#ifndef MAX
-#define MAX(a, b)		((a) >= (b) ? (a) : (b))
-#endif
-
-#ifndef MIN
-#define MIN(a, b)		((a) >= (b) ? (b) : (a))
-#endif
-
 /* LOCK */
 #define ppm_lock(lock)		mutex_lock(lock)
 #define ppm_unlock(lock)	mutex_unlock(lock)

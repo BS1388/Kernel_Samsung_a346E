@@ -15,6 +15,7 @@
 #include <linux/preempt.h>
 #include <linux/trace_events.h>
 #include <linux/kernel.h>
+#include <linux/minmax.h>
 #include <linux/slab.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
@@ -63,9 +64,6 @@ static const struct proc_ops perfmgr_ ## name ## _proc_fops = { \
 		if (debug_enable) \
 			pr_debug(fmt, ##x); \
 	} while (0)
-
-#define MAX(a, b) (((a) > (b)) ? (a) : (b))
-#define MIN(a, b) (((a) < (b)) ? (a) : (b))
 
 #define CLUSTER_MAX 10
 #define CORE_MAX 8
