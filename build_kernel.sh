@@ -290,7 +290,7 @@ prepare_workspace() {
 }
 
 # ------------------------------------------------------------------------------
-# 6. Patch stamp.bzl to avoid -maybe-dirty
+# 6. Patch stamp.bzl and fix build.sh shebang (Samsung bug: SPDX before #!/bin/bash)
 # ------------------------------------------------------------------------------
 patch_stamp() {
   log "Patching stamp.bzl to avoid git dirty version"
@@ -310,6 +310,38 @@ patch_stamp() {
       head -n 20 "$stamp" | tail -n 10 || true
     else
       warn "$stamp not found, skipping"
+    fi
+  done
+
+  # Fix Samsung's broken shebang: SPDX line before #!/bin/bash causes /bin/sh to be used -> source: not found
+  log "Fixing kernel_device_modules-6.6/build.sh shebang"
+  local build_scripts=(
+    "${ROOT_DIR}/kernel/kernel_device_modules-6.6/build.sh"
+    "${ROOT_DIR}/kernel/kernel_device_modules-6.6/build_abi.sh"
+    "${ROOT_DIR}/kernel-6.6/kernel_device_modules-6.6/build.sh"
+    "${ROOT_DIR}/Kernel-6.6/kernel_device_modules-6.6/build.sh"
+    "${ROOT_DIR}/kernel-6.6/build/kernel/kleaf/bazel.sh"
+    "${ROOT_DIR}/Kernel-6.6/build/kernel/kleaf/bazel.sh"
+  )
+  for bs in "${build_scripts[@]}"; do
+    if [ -f "$bs" ]; then
+      log "Checking $bs (first line: $(head -n1 "$bs"))"
+      if head -n1 "$bs" | grep -q "SPDX"; then
+        log "Fixing shebang order in $bs (SPDX before shebang)"
+        local tmp
+        tmp=$(mktemp)
+        {
+          echo "#!/bin/bash"
+          # Keep original content without any shebang lines
+          grep -v "^#!/bin/bash" "$bs" || true
+        } > "$tmp"
+        mv "$tmp" "$bs"
+        chmod +x "$bs"
+        ok "Fixed $bs"
+        head -n 3 "$bs"
+      else
+        ok "$bs shebang OK (first line is shebang)"
+      fi
     fi
   done
 }
@@ -385,11 +417,12 @@ run_kernel_build() {
   free -h || true
 
   log "Starting kernel build (this takes ~50min)"
-  # Use unbuffered output for real-time logs
+  # Use bash explicitly - Samsung's build.sh has broken shebang (SPDX before #!/bin/bash) causing /bin/sh to be used -> source: not found
+  # Always call with bash
   if command -v stdbuf >/dev/null 2>&1; then
-    stdbuf -oL -eL "$build_sh"
+    stdbuf -oL -eL bash "$build_sh"
   else
-    "$build_sh"
+    bash "$build_sh"
   fi
 
   popd >/dev/null
