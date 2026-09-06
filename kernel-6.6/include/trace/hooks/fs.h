@@ -1,0 +1,69 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+#undef TRACE_SYSTEM
+#define TRACE_SYSTEM fs
+
+#define TRACE_INCLUDE_PATH trace/hooks
+
+#if !defined(_TRACE_HOOK_FS_H) || defined(TRACE_HEADER_MULTI_READ)
+#define _TRACE_HOOK_FS_H
+
+#include <trace/hooks/vendor_hooks.h>
+
+DECLARE_RESTRICTED_HOOK(android_rvh_ksys_umount,
+		TP_PROTO(char __user *name, int flags),
+		TP_ARGS(name, flags), 1);
+DECLARE_HOOK(android_vh_f2fs_file_open,
+	TP_PROTO(struct inode *inode, struct file *filp),
+	TP_ARGS(inode, filp));
+
+DECLARE_HOOK(android_vh_f2fs_ioc_set_pin_file,
+	TP_PROTO(struct inode *inode, bool has_blkzoned, bool *allow_pin_big_file),
+	TP_ARGS(inode, has_blkzoned, allow_pin_big_file));
+
+DECLARE_RESTRICTED_HOOK(android_rvh_f2fs_down_read,
+	TP_PROTO(wait_queue_head_t *read_waiters, struct rw_semaphore *rwsem, bool *skip),
+	TP_ARGS(read_waiters, rwsem, skip), 1);
+
+DECLARE_HOOK(android_vh_f2fs_improve_priority,
+	TP_PROTO(struct task_struct *p, int *saved_prio, bool *skip),
+	TP_ARGS(p, saved_prio, skip));
+
+DECLARE_HOOK(android_vh_f2fs_restore_priority,
+	TP_PROTO(struct task_struct *p, int saved_prio),
+	TP_ARGS(p, saved_prio));
+
+DECLARE_HOOK(android_vh_put_super,
+	TP_PROTO(struct super_block *sb),
+	TP_ARGS(sb));
+
+DECLARE_HOOK(android_vh_ep_create_wakeup_source,
+	TP_PROTO(char *name, int len),
+	TP_ARGS(name, len));
+
+DECLARE_HOOK(android_vh_timerfd_create,
+	TP_PROTO(char *name, int len),
+	TP_ARGS(name, len));
+
+DECLARE_HOOK(android_vh_f2fs_set_bio_flag,
+	TP_PROTO(struct folio *folio, struct bio *bio),
+	TP_ARGS(folio, bio));
+
+DECLARE_HOOK(android_vh_erofs_iostat_submit,
+	TP_PROTO(struct super_block *sb, struct bio *bio),
+	TP_ARGS(sb, bio));
+
+DECLARE_HOOK(android_vh_erofs_iostat_update,
+	TP_PROTO(struct super_block *sb, struct bio *bio),
+	TP_ARGS(sb, bio));
+
+DECLARE_HOOK(android_vh_f2fs_iostat_submit,
+	TP_PROTO(struct super_block *sb, int type, struct bio *bio),
+	TP_ARGS(sb, type, bio));
+
+DECLARE_HOOK(android_vh_f2fs_iostat_update,
+	TP_PROTO(struct super_block *sb, struct bio *bio, bool *skip),
+	TP_ARGS(sb, bio, skip));
+#endif /* _TRACE_HOOK_FS_H */
+
+/* This part must be outside protection */
+#include <trace/define_trace.h>
