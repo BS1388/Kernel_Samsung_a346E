@@ -2,6 +2,21 @@ name: Build A346E Kernel
 
 on:
   workflow_dispatch:
+    inputs:
+      ksu_variant:
+        description: "Choose KernelSU variant"
+        required: true
+        type: choice
+        options:
+          - NO-ROOT
+          - KSUN
+          - KSUN-SUSFS-v1.5.12
+        default: NO-ROOT
+      permissive:
+        description: "Make SELinux permissive?"
+        type: boolean
+        required: true
+        default: false
   push:
     branches:
       - arena/01a07254-kernel-samsung-a346e
@@ -9,28 +24,58 @@ on:
       - Test-Build
       - a346E-Stock
 
+# Fix Node.js 20 deprecation: use latest actions that support Node 24
+# checkout@v6, upload-artifact@v4+ uses Node 24 (v6.0.0+ for artifact)
+# See: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  G_WORKSPACE: ${{ github.workspace }}
+  G_EXT: ${{ github.workspace }}/external_deps
+  KSU_VAR: ${{ github.event.inputs.ksu_variant || 'NO-ROOT' }}
+  PERMISSIVE: ${{ github.event.inputs.permissive || 'false' }}
+
 jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 300
-    permissions:
-      contents: read
-      issues: write
 
     steps:
       # ------------------------------------------------------------
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
           fetch-depth: 1
+
+      # Detect kernel source dir casing (Kernel-6.6 vs kernel-6.6)
+      - name: Detect kernel source directory
+        run: |
+          set -eux
+          if [ -f "Kernel-6.6/Makefile" ]; then
+            REAL_DIR="Kernel-6.6"
+          elif [ -f "kernel-6.6/Makefile" ]; then
+            REAL_DIR="kernel-6.6"
+          else
+            echo "::error::Could not find Kernel-6.6 or kernel-6.6 with Makefile"
+            exit 1
+          fi
+          echo "Detected: $REAL_DIR"
+          echo "G_KERNEL=${{ github.workspace }}/$REAL_DIR" >> $GITHUB_ENV
+          echo "DEFCONFIG=$REAL_DIR/arch/arm64/configs/gki_defconfig" >> $GITHUB_ENV
+          # Fix symlink for case-sensitive FS
+          rm -f kernel/kernel-6.6
+          ln -sfn "../$REAL_DIR" kernel/kernel-6.6
+          ls -la kernel/kernel-6.6
 
       # ------------------------------------------------------------
       - name: Free disk space
         run: |
           set -eux
           df -h
-          # Remove large unnecessary toolchains to free space for kernel build
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" /opt/hostedtoolcache/CodeQL || true
           sudo apt-get remove --purge -y "php*" "dotnet*" "mysql*" "nodejs*" "google*" "firefox*" "mongodb*" "postgresql*" "azure-cli*" || true
           sudo apt-get autoremove -y || true
@@ -63,47 +108,265 @@ jobs:
           df -h
 
       # ------------------------------------------------------------
+      - name: Setup external dependencies (for KSU/SUSFS)
+        if: env.KSU_VAR != 'NO-ROOT'
+        run: |
+          set -eux
+          mkdir -p ${{ env.G_EXT }}
+          cd ${{ env.G_EXT }}
+
+          # AnyKernel3 (for final zip, optional)
+          if [ ! -d AnyKernel3 ]; then
+            git clone https://github.com/WildKernels/AnyKernel3.git -b gki-2.0 --depth 1
+          fi
+
+          # SUSFS and patches only needed for KSUN-SUSFS variant
+          if [ "${{ env.KSU_VAR }}" = "KSUN-SUSFS-v1.5.12" ]; then
+            if [ ! -d susfs4ksu ]; then
+              git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6 --depth 1
+            fi
+            cd susfs4ksu
+            # Pin to known working commit for v1.5.12
+            git fetch --depth 1 origin f450ec00bf592d080f59b01ff6f9242456c9a427 || true
+            git checkout f450ec00bf592d080f59b01ff6f9242456c9a427 || true
+            cd ..
+
+            if [ ! -d kernel_patches ]; then
+              git clone https://github.com/xnnnsets/kernel_patches.git --depth 1
+            fi
+            if [ ! -d patch ]; then
+              git clone https://github.com/xnnnsets/patch.git --depth 1
+            fi
+            if [ ! -d SukiSU_patch ]; then
+              git clone https://github.com/SukiSU-Ultra/SukiSU_patch.git --depth 1
+            fi
+          fi
+
+          ls -la
+
+      # ------------------------------------------------------------
+      - name: Apply permissive patch (if enabled)
+        if: env.PERMISSIVE == 'true'
+        run: |
+          set -eux
+          echo "Applying SELinux permissive patch"
+          cd ${{ env.G_KERNEL }}
+          # Patch file is in repo at patches/selinux-make-permissive.patch
+          PATCH_FILE="${{ github.workspace }}/patches/selinux-make-permissive.patch"
+          if [ ! -f "$PATCH_FILE" ]; then
+            echo "::error::Permissive patch not found at $PATCH_FILE"
+            exit 1
+          fi
+          # Check if already applied
+          if grep -q "selinux_enforcing_boot 0" security/selinux/hooks.c; then
+            echo "Permissive already applied"
+          else
+            patch -p1 < "$PATCH_FILE" || {
+              echo "::error::Failed to apply permissive patch"
+              exit 1
+            }
+            echo "Permissive patch applied"
+          fi
+
+      # ------------------------------------------------------------
+      - name: Apply SUSFS patches (KSUN-SUSFS-v1.5.12)
+        if: env.KSU_VAR == 'KSUN-SUSFS-v1.5.12'
+        run: |
+          set -eux
+          echo "Setting up SUSFS for ${{ env.KSU_VAR }}"
+          cd ${{ env.G_EXT }}/susfs4ksu
+
+          # Copy SUSFS headers
+          cp -v ./kernel_patches/include/linux/* ${{ env.G_KERNEL }}/include/linux/ || true
+          cp -v ./kernel_patches/fs/* ${{ env.G_KERNEL }}/fs/ || true
+
+          cd ${{ env.G_KERNEL }}
+
+          # Common patches
+          patch -p1 < ${{ env.G_EXT }}/patch/6.6/Dont_reduce_TTL.patch || true
+
+          # SUSFS specific
+          patch -p1 < ${{ env.G_EXT }}/kernel_patches/wild/hooks/scope_min_manual_hooks_v1.4.patch || true
+          patch -p1 < ${{ env.G_EXT }}/susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch || true
+          patch -p1 < ${{ env.G_EXT }}/kernel_patches/wild/susfs_fix_patches/v1.5.12/1_fix_base.c.patch || true
+
+          echo "SUSFS patches applied"
+
+      # ------------------------------------------------------------
+      - name: Add KernelSU
+        if: env.KSU_VAR != 'NO-ROOT'
+        run: |
+          set -eux
+          cd ${{ env.G_KERNEL }}
+
+          case "${{ env.KSU_VAR }}" in
+            "KSUN")
+              echo "Adding KernelSU-Next (dev)"
+              curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/refs/heads/dev/kernel/setup.sh" | bash -
+              KSU_DIR="KernelSU-Next"
+              ;;
+            "KSUN-SUSFS-v1.5.12")
+              echo "Adding KernelSU-Next (next-1) for SUSFS v1.5.12"
+              curl -LSs "https://raw.githubusercontent.com/xnnnsets/KernelSU-Next/refs/heads/next-1/kernel/setup.sh" | bash -s next-1
+              KSU_DIR="KernelSU-Next"
+              # SUSFS patches for KSU
+              patch -p1 -d ./KernelSU-Next < ${{ env.G_EXT }}/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
+              patch -p1 -d ./KernelSU-Next < ${{ env.G_EXT }}/kernel_patches/wild/susfs_fix_patches/v1.5.12/fix_core_hook.c.patch || true
+              patch -p1 -d ./KernelSU-Next < ${{ env.G_EXT }}/kernel_patches/wild/susfs_fix_patches/v1.5.12/fix_sucompat.c.patch || true
+              patch -p1 -d ./KernelSU-Next < ${{ env.G_EXT }}/kernel_patches/wild/susfs_fix_patches/v1.5.12/fix_kernel_compat.c.patch || true
+              ;;
+          esac
+
+          if [ -n "${KSU_DIR:-}" ] && [ -d "./$KSU_DIR" ]; then
+            cd "./$KSU_DIR"
+            KSU_GIT_VERSION=$(git rev-list --count HEAD 2>/dev/null || echo "0")
+            echo "KSU_GIT_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.9.5")" >> $GITHUB_ENV
+            echo "KSU_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")" >> $GITHUB_ENV
+            echo "KSU_VERSION=$((30000 + KSU_GIT_VERSION))" >> $GITHUB_ENV
+            echo "KSU added: $KSU_DIR"
+          fi
+
+      # ------------------------------------------------------------
+      - name: Remove GKI protected exports restriction (SUSFS ABI fix)
+        if: env.KSU_VAR == 'KSUN-SUSFS-v1.5.12'
+        run: |
+          set -eux
+          echo "Removing protected_exports_list for SUSFS"
+          # Search only in kernel tree, exclude external_deps
+          grep -rl "protected_exports_list" --include="BUILD.bazel" --exclude-dir=external_deps --exclude-dir=.git . 2>/dev/null | while read -r f; do
+            sed -i '/"protected_exports_list"\s*:\s*"android\/abi_gki_protected_exports_aarch64",\?/d' "$f" || true
+            echo "Patched $f"
+          done
+          find . -iname "abi_gki_protected_exports*" -not -path "./external_deps/*" -not -path "./.git/*" -delete 2>/dev/null || true
+
+      # ------------------------------------------------------------
+      - name: Configure defconfig for KSU/SUSFS
+        if: env.KSU_VAR != 'NO-ROOT'
+        run: |
+          set -eux
+          DEFCONFIG_FILE="${{ env.G_KERNEL }}/arch/arm64/configs/gki_defconfig"
+          # Fallback if DEFCONFIG env is set differently
+          if [ ! -f "$DEFCONFIG_FILE" ]; then
+            DEFCONFIG_FILE="${{ env.DEFCONFIG }}"
+          fi
+          # If still not found, try to find it
+          if [ ! -f "$DEFCONFIG_FILE" ] && [ -f "${{ env.G_KERNEL }}/arch/arm64/configs/gki_defconfig" ]; then
+            DEFCONFIG_FILE="${{ env.G_KERNEL }}/arch/arm64/configs/gki_defconfig"
+          fi
+          echo "Using defconfig: $DEFCONFIG_FILE"
+          ls -la "$DEFCONFIG_FILE" || true
+
+          case "${{ env.KSU_VAR }}" in
+            "KSUN")
+              echo "CONFIG_KSU=y" >> "$DEFCONFIG_FILE"
+              echo "CONFIG_KPROBES=y" >> "$DEFCONFIG_FILE"
+              echo "CONFIG_KPROBE_EVENTS=y" >> "$DEFCONFIG_FILE"
+              echo "CONFIG_MODULES=y" >> "$DEFCONFIG_FILE"
+              ;;
+            "KSUN-SUSFS-v1.5.12")
+              echo "CONFIG_KSU=y" >> "$DEFCONFIG_FILE"
+              echo "CONFIG_KSU_KPROBES_HOOK=n" >> "$DEFCONFIG_FILE"
+              echo "CONFIG_MODULES=y" >> "$DEFCONFIG_FILE"
+              # SUSFS configs
+              echo "# SUSFS Configuration" >> "$DEFCONFIG_FILE"
+              echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG_FILE"
+              echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> "$DEFCONFIG_FILE"
+              echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> "$DEFCONFIG_FILE"
+              echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> "$DEFCONFIG_FILE"
+              echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y" >> "$DEFCONFIG_FILE"
+              echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> "$DEFCONFIG_FILE"
+              echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y" >> "$DEFCONFIG_FILE"
+              echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> "$DEFCONFIG_FILE"
+              echo "CONFIG_KSU_SUSFS_SUS_OVERLAYFS=n" >> "$DEFCONFIG_FILE"
+              echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> "$DEFCONFIG_FILE"
+              echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$DEFCONFIG_FILE"
+              echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$DEFCONFIG_FILE"
+              echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> "$DEFCONFIG_FILE"
+              echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> "$DEFCONFIG_FILE"
+              echo "CONFIG_KSU_SUSFS_SUS_SU=n" >> "$DEFCONFIG_FILE"
+              ;;
+          esac
+
+          # IPSet support (common for all KSU variants)
+          echo "# IPSet Support" >> "$DEFCONFIG_FILE"
+          echo "CONFIG_IP_SET=y" >> "$DEFCONFIG_FILE"
+          echo "CONFIG_IP_SET_MAX=65534" >> "$DEFCONFIG_FILE"
+          echo "CONFIG_IP_SET_BITMAP_IP=y" >> "$DEFCONFIG_FILE"
+          echo "CONFIG_IP_SET_BITMAP_IPMAC=y" >> "$DEFCONFIG_FILE"
+          echo "CONFIG_IP_SET_BITMAP_PORT=y" >> "$DEFCONFIG_FILE"
+          echo "CONFIG_IP_SET_HASH_IP=y" >> "$DEFCONFIG_FILE"
+          echo "CONFIG_IP_SET_HASH_IPMARK=y" >> "$DEFCONFIG_FILE"
+          echo "CONFIG_IP_SET_HASH_IPPORT=y" >> "$DEFCONFIG_FILE"
+          echo "CONFIG_IP_SET_HASH_IPPORTIP=y" >> "$DEFCONFIG_FILE"
+          echo "CONFIG_IP_SET_HASH_IPPORTNET=y" >> "$DEFCONFIG_FILE"
+          echo "CONFIG_IP_SET_HASH_IPMAC=y" >> "$DEFCONFIG_FILE"
+          echo "CONFIG_IP_SET_HASH_MAC=y" >> "$DEFCONFIG_FILE"
+          echo "CONFIG_IP_SET_HASH_NETPORTNET=y" >> "$DEFCONFIG_FILE"
+          echo "CONFIG_IP_SET_HASH_NET=y" >> "$DEFCONFIG_FILE"
+          echo "CONFIG_IP_SET_HASH_NETNET=y" >> "$DEFCONFIG_FILE"
+          echo "CONFIG_IP_SET_HASH_NETPORT=y" >> "$DEFCONFIG_FILE"
+          echo "CONFIG_IP_SET_HASH_NETIFACE=y" >> "$DEFCONFIG_FILE"
+          echo "CONFIG_IP_SET_LIST_SET=y" >> "$DEFCONFIG_FILE"
+
+          echo "Defconfig configured for ${{ env.KSU_VAR }}"
+
+      # ------------------------------------------------------------
       - name: Build kernel
         run: |
           set -euxo pipefail
           chmod +x ./build_kernel.sh
-          # Capture full log while still showing output
+
+          # Show selected options
+          echo "=== Build Options ==="
+          echo "KSU Variant: ${{ env.KSU_VAR }}"
+          echo "Permissive: ${{ env.PERMISSIVE }}"
+          echo "Kernel Dir: ${{ env.G_KERNEL }}"
+
+          # Capture log
           bash ./build_kernel.sh 2>&1 | tee build.log
           EXIT_CODE=${PIPESTATUS[0]}
           echo "Build script exit code: $EXIT_CODE"
           ls -lh Image build.log || true
           df -h
+
           if [ $EXIT_CODE -ne 0 ]; then
             echo "::error::build_kernel.sh failed with $EXIT_CODE"
             exit $EXIT_CODE
           fi
-          # Verify Image exists
+
           if [ ! -f Image ]; then
-            echo "::error::Image not found after build"
-            echo "Searching for Image in out/ ..."
+            echo "::error::Image not found"
             find out -type f -name "Image" | head -n 20 || true
-            ls -R out/target/product/a34x/obj/KLEAF_OBJ/dist 2>&1 | head -n 100 || true
             exit 1
           fi
+
+          # Generate version info
+          echo "Based on $(grep SEC_BUILDNUMBER build_kernel.sh | tail -n1 | cut -d'\"' -f2) Samsung Open Source" > versions.txt
+          echo "KSU Variant: ${{ env.KSU_VAR }}" >> versions.txt
+          echo "Permissive: ${{ env.PERMISSIVE }}" >> versions.txt
+          echo "SHA: ${{ github.sha }}" >> versions.txt
+
           echo "✅ Image ready: $(ls -lh Image)"
+          sha256sum Image > Image.sha256sum || true
 
       # ------------------------------------------------------------
       - name: Upload kernel Image
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
-          name: kernel-image
-          # Only upload the final Image, build.log is uploaded separately
+          name: kernel-image-${{ env.KSU_VAR }}-${{ env.PERMISSIVE == 'true' && 'permissive' || 'enforcing' }}
           path: |
             Image
+            Image.sha256sum
+            versions.txt
             out/target/product/a34x/obj/KLEAF_OBJ/dist/kernel_device_modules-6.6/mgk_64_k66_kernel_aarch64.user/Image
           if-no-files-found: warn
 
       - name: Upload build log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
-          name: build-log
+          name: build-log-${{ env.KSU_VAR }}-${{ env.PERMISSIVE == 'true' && 'permissive' || 'enforcing' }}
           path: build.log
           if-no-files-found: warn
 
@@ -114,26 +377,23 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eux
-          LOG_FILE=build.log
-          TAIL_FILE=build_tail.log
-          tail -n 4000 "$LOG_FILE" > "$TAIL_FILE" || true
-          # Truncate to 60k chars for GitHub issue limit (65536)
-          BODY=$(tail -c 60000 "$TAIL_FILE")
-          # Build issue body (use heredoc to avoid escaping issues)
+          tail -n 4000 build.log > build_tail.log || true
+          BODY=$(tail -c 60000 build_tail.log)
           cat > issue_body.txt <<EOF
           Build failed for run ${{ github.run_id }}
           Commit: ${{ github.sha }}
           Branch: ${{ github.ref_name }}
+          KSU: ${{ env.KSU_VAR }}
+          Permissive: ${{ env.PERMISSIVE }}
 
           \`\`\`
           $BODY
           \`\`\`
 
-          [View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          [View run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
           EOF
-          # Create issue
           gh issue create \
-            --title "Build log for failed run ${{ github.run_id }}" \
+            --title "Build log for failed run ${{ github.run_id }} [${{ env.KSU_VAR }}|${{ env.PERMISSIVE == 'true' && 'permissive' || 'enforcing' }}]" \
             --body-file issue_body.txt || \
           gh api repos/${{ github.repository }}/issues -X POST \
             -f title="Build log for failed run ${{ github.run_id }}" \
