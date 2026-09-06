@@ -17,6 +17,11 @@ on:
         type: boolean
         required: true
         default: false
+      custom_patches:
+        description: "Apply custom patches from patch/ folder?"
+        type: boolean
+        required: true
+        default: false
   push:
     branches:
       - arena/01a07254-kernel-samsung-a346e
@@ -37,6 +42,7 @@ env:
   G_EXT: ${{ github.workspace }}/external_deps
   KSU_VAR: ${{ github.event.inputs.ksu_variant || 'NO-ROOT' }}
   PERMISSIVE: ${{ github.event.inputs.permissive || 'false' }}
+  CUSTOM_PATCH: ${{ github.event.inputs.custom_patches || 'false' }}
 
 jobs:
   build:
@@ -151,8 +157,8 @@ jobs:
           set -eux
           echo "Applying SELinux permissive patch"
           cd ${{ env.G_KERNEL }}
-          # Patch file is in repo at patches/selinux-make-permissive.patch
-          PATCH_FILE="${{ github.workspace }}/patches/selinux-make-permissive.patch"
+          # Patch file is in repo at Permissive/selinux-make-permissive.patch
+          PATCH_FILE="${{ github.workspace }}/Permissive/selinux-make-permissive.patch"
           if [ ! -f "$PATCH_FILE" ]; then
             echo "::error::Permissive patch not found at $PATCH_FILE"
             exit 1
@@ -167,6 +173,36 @@ jobs:
             }
             echo "Permissive patch applied"
           fi
+
+      # ------------------------------------------------------------
+      - name: Apply custom patches from patch/ folder (if enabled)
+        if: env.CUSTOM_PATCH == 'true'
+        run: |
+          set -eux
+          echo "Applying custom patches from patch/ folder"
+          cd ${{ env.G_KERNEL }}
+          PATCH_DIR="${{ github.workspace }}/patch"
+          if [ ! -d "$PATCH_DIR" ]; then
+            echo "::warning::patch/ folder not found at $PATCH_DIR"
+            exit 0
+          fi
+          COUNT=$(ls -1 "$PATCH_DIR"/*.patch 2>/dev/null | wc -l || echo 0)
+          if [ "$COUNT" -eq 0 ]; then
+            echo "No .patch files found in $PATCH_DIR"
+            ls -la "$PATCH_DIR"
+            exit 0
+          fi
+          echo "Found $COUNT patch files"
+          for p in $(ls "$PATCH_DIR"/*.patch | sort); do
+            echo "=== Applying $p ==="
+            patch -p1 < "$p" || {
+              echo "::error::Failed to apply $p"
+              echo "Continuing with next patch..."
+              # Optionally fail: uncomment next line to make build fail on patch error
+              # exit 1
+            }
+          done
+          echo "All custom patches processed"
 
       # ------------------------------------------------------------
       - name: Apply SUSFS patches (KSUN-SUSFS-v1.5.12)
@@ -320,7 +356,12 @@ jobs:
           echo "=== Build Options ==="
           echo "KSU Variant: ${{ env.KSU_VAR }}"
           echo "Permissive: ${{ env.PERMISSIVE }}"
+          echo "Custom Patches: ${{ env.CUSTOM_PATCH }}"
           echo "Kernel Dir: ${{ env.G_KERNEL }}"
+          if [ "${{ env.CUSTOM_PATCH }}" = "true" ]; then
+            echo "Custom patches in patch/:"
+            ls -lh ${{ github.workspace }}/patch/ || true
+          fi
 
           # Capture log
           bash ./build_kernel.sh 2>&1 | tee build.log
@@ -344,7 +385,12 @@ jobs:
           echo "Based on $(grep SEC_BUILDNUMBER build_kernel.sh | tail -n1 | cut -d'\"' -f2) Samsung Open Source" > versions.txt
           echo "KSU Variant: ${{ env.KSU_VAR }}" >> versions.txt
           echo "Permissive: ${{ env.PERMISSIVE }}" >> versions.txt
+          echo "Custom Patches: ${{ env.CUSTOM_PATCH }}" >> versions.txt
           echo "SHA: ${{ github.sha }}" >> versions.txt
+          if [ "${{ env.CUSTOM_PATCH }}" = "true" ]; then
+            echo "--- Custom Patches Applied ---" >> versions.txt
+            ls -1 ${{ github.workspace }}/patch/*.patch 2>/dev/null | xargs -n1 basename >> versions.txt || echo "No patches" >> versions.txt
+          fi
 
           echo "✅ Image ready: $(ls -lh Image)"
           sha256sum Image > Image.sha256sum || true
@@ -354,7 +400,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: kernel-image-${{ env.KSU_VAR }}-${{ env.PERMISSIVE == 'true' && 'permissive' || 'enforcing' }}
+          name: kernel-image-${{ env.KSU_VAR }}-${{ env.PERMISSIVE == 'true' && 'permissive' || 'enforcing' }}-${{ env.CUSTOM_PATCH == 'true' && 'custom' || 'nocustom' }}
           path: |
             Image
             Image.sha256sum
@@ -366,7 +412,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: build-log-${{ env.KSU_VAR }}-${{ env.PERMISSIVE == 'true' && 'permissive' || 'enforcing' }}
+          name: build-log-${{ env.KSU_VAR }}-${{ env.PERMISSIVE == 'true' && 'permissive' || 'enforcing' }}-${{ env.CUSTOM_PATCH == 'true' && 'custom' || 'nocustom' }}
           path: build.log
           if-no-files-found: warn
 
@@ -385,6 +431,7 @@ jobs:
           Branch: ${{ github.ref_name }}
           KSU: ${{ env.KSU_VAR }}
           Permissive: ${{ env.PERMISSIVE }}
+          Custom Patches: ${{ env.CUSTOM_PATCH }}
 
           \`\`\`
           $BODY
@@ -393,7 +440,7 @@ jobs:
           [View run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
           EOF
           gh issue create \
-            --title "Build log for failed run ${{ github.run_id }} [${{ env.KSU_VAR }}|${{ env.PERMISSIVE == 'true' && 'permissive' || 'enforcing' }}]" \
+            --title "Build log for failed run ${{ github.run_id }} [${{ env.KSU_VAR }}|${{ env.PERMISSIVE == 'true' && 'permissive' || 'enforcing' }}|${{ env.CUSTOM_PATCH == 'true' && 'custom' || 'nocustom' }}]" \
             --body-file issue_body.txt || \
           gh api repos/${{ github.repository }}/issues -X POST \
             -f title="Build log for failed run ${{ github.run_id }}" \
