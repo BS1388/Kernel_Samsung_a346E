@@ -201,11 +201,8 @@ prepare_workspace() {
   fi
 
   # If original was Kernel-6.6 (capital), also ensure lowercase exists for bazel
-  # and create symlink for compatibility
   if [ "$real_kernel_basename" = "Kernel-6.6" ]; then
     log "Original is Kernel-6.6 (capital), ensuring kernel-6.6 exists"
-    # kernel-6.6 already created above from Kernel-6.6
-    # Also ensure ROOT_DIR/kernel-6.6 exists as real dir for fallback
     if [ ! -d "${ROOT_DIR}/kernel-6.6" ]; then
       log "Creating ${ROOT_DIR}/kernel-6.6 as copy of ${real_kernel_dir}"
       if command -v rsync >/dev/null 2>&1; then
@@ -238,6 +235,21 @@ prepare_workspace() {
         cp -r "${ROOT_DIR}/build/bazel_common_rules/." "build/bazel_common_rules/" || true
       fi
     fi
+  fi
+
+  # --- Google-FDO: external FDO profile must be inside kernel/ workspace for bazel ---
+  # The label //Google-FDO:kernel.afdo is resolved from workspace root (kernel/), so we need kernel/Google-FDO
+  if [ -d "${ROOT_DIR}/Google-FDO" ]; then
+    log "Syncing Google-FDO to kernel/Google-FDO for bazel"
+    rm -rf "Google-FDO" || true
+    if command -v rsync >/dev/null 2>&1; then
+      rsync -a --copy-links "${ROOT_DIR}/Google-FDO/" "Google-FDO/" || cp -r "${ROOT_DIR}/Google-FDO" "Google-FDO"
+    else
+      cp -r "${ROOT_DIR}/Google-FDO" "Google-FDO"
+    fi
+    ls -lh "Google-FDO/" || true
+  else
+    warn "Google-FDO not found at ${ROOT_DIR}/Google-FDO"
   fi
 
   # Standard symlinks required by kleaf
