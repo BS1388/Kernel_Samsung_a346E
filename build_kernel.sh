@@ -293,6 +293,55 @@ prepare_workspace() {
     ok "Ensured ${ROOT_DIR}/system/tools/mkbootimg"
   fi
 
+  # --- MTK signing key & module sig fix ---
+  # The build fails with sign-file: ../kernel_device_modules-6.6/certs/mtk_signing_key.pem No such file
+  # Root cause: bazel sandbox doesn't have mtk_signing_key.pem at expected relative path
+  # Fix 1: ensure key exists in all certs locations
+  # Fix 2: patch defconfigs to disable module signing (robust workaround for custom kernels)
+  log "Ensuring mtk_signing_key.pem and module sig workaround"
+  local mtk_key_src=""
+  if [ -f "${ROOT_DIR}/kernel/kernel_device_modules-6.6/certs/mtk_signing_key.pem" ]; then
+    mtk_key_src="${ROOT_DIR}/kernel/kernel_device_modules-6.6/certs/mtk_signing_key.pem"
+  elif [ -f "kernel_device_modules-6.6/certs/mtk_signing_key.pem" ]; then
+    mtk_key_src="$(pwd)/kernel_device_modules-6.6/certs/mtk_signing_key.pem"
+  elif [ -f "${ROOT_DIR}/kernel-6.6/certs/mtk_signing_key.pem" ]; then
+    mtk_key_src="${ROOT_DIR}/kernel-6.6/certs/mtk_signing_key.pem"
+  fi
+  if [ -n "$mtk_key_src" ] && [ -f "$mtk_key_src" ]; then
+    log "Found MTK key at $mtk_key_src"
+    ensure_dir "${ROOT_DIR}/kernel-6.6/certs"
+    cp -v "$mtk_key_src" "${ROOT_DIR}/kernel-6.6/certs/mtk_signing_key.pem" 2>/dev/null || true
+    ensure_dir "kernel-6.6/certs"
+    cp -v "$mtk_key_src" "kernel-6.6/certs/mtk_signing_key.pem" 2>/dev/null || true
+    ensure_dir "kernel_device_modules-6.6/certs"
+    cp -v "$mtk_key_src" "kernel_device_modules-6.6/certs/mtk_signing_key.pem" 2>/dev/null || true
+  fi
+
+  # Fix 2: patch gki_defconfig to disable module sig (if not already)
+  if [ -f "kernel-6.6/arch/arm64/configs/gki_defconfig" ]; then
+    log "Patching gki_defconfig to disable MODULE_SIG"
+    sed -i 's/^CONFIG_MODULE_SIG=y/# CONFIG_MODULE_SIG is not set/' "kernel-6.6/arch/arm64/configs/gki_defconfig" || true
+    sed -i 's/^CONFIG_MODULE_SIG_PROTECT=y/# CONFIG_MODULE_SIG_PROTECT is not set/' "kernel-6.6/arch/arm64/configs/gki_defconfig" || true
+  fi
+  # Patch mediatek-bazel_defconfig to use auto-generated key
+  for defconfig_path in "kernel_device_modules-6.6/arch/arm64/configs/mediatek-bazel_defconfig"; do
+    if [ -f "$defconfig_path" ]; then
+      log "Patching $defconfig_path to use certs/signing_key.pem"
+      sed -i 's|CONFIG_MODULE_SIG_KEY=.*|CONFIG_MODULE_SIG_KEY="certs/signing_key.pem"|' "$defconfig_path" || true
+    fi
+  done
+  # Create disable_module_sig.config fragment if not exists
+  local disable_sig_fragment="kernel_device_modules-6.6/kernel/configs/disable_module_sig.config"
+  if [ ! -f "$disable_sig_fragment" ]; then
+    log "Creating $disable_sig_fragment"
+    ensure_dir "$(dirname "$disable_sig_fragment")"
+    cat > "$disable_sig_fragment" <<'EOF'
+# Disable module signing for custom kernel builds - fixes bazel sandbox sign-file failure
+CONFIG_MODULE_SIG=n
+EOF
+  fi
+  ls -lh "kernel-6.6/certs/mtk_signing_key.pem" "kernel_device_modules-6.6/certs/mtk_signing_key.pem" "$disable_sig_fragment" 2>&1 || true
+
   # List critical files for debug
   ls -lh "kernel-6.6/build.config.common" 2>/dev/null || warn "kernel-6.6/build.config.common not found"
   ls -lh "prebuilts" 2>/dev/null || true
@@ -378,9 +427,14 @@ generate_build_config() {
   fi
 
   log "Running $gen_script from $(pwd)"
+  local overlays="mt6877_overlay.config mt6877_teegris_5_overlay.config"
+  if [ -f "kernel_device_modules-6.6/kernel/configs/disable_module_sig.config" ]; then
+    overlays="$overlays disable_module_sig.config"
+    log "Including disable_module_sig.config in overlays: $overlays"
+  fi
   python3 "$gen_script" \
     --kernel-defconfig mediatek-bazel_defconfig \
-    --kernel-defconfig-overlays "mt6877_overlay.config mt6877_teegris_5_overlay.config" \
+    --kernel-defconfig-overlays "$overlays" \
     --kernel-build-config-overlays "" \
     -m user \
     -o "../out/target/product/a34x/obj/KERNEL_OBJ/build.config"
