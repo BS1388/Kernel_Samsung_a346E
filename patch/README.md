@@ -1,50 +1,37 @@
 # Patch Directory
 
-This directory contains patches for the Samsung A346E kernel build.
-
 ## Structure
 
-- `compat-kernel-6.6/` — **Auto-applied** compatibility patches for kernel-6.6 vs device modules / vendor.
-  These fix build errors when using a newer kernel (6.6) with older device modules (84 files, 75KB):
-  - `0001-modules-check-dedup-sec_thermistor.patch` — Fixes duplicate `sec_thermistor.ko` same-path conflict in `modules.order`
-  - `0002-loop_h-restore-for-zram.patch` — Restores `include/linux/loop.h` removed in 6.6 but needed by `zram_ext.c`
-  - `0003-stp_uart-MAX-MIN-guard.patch` — Guards `MAX`/`MIN` redefinition in `stp_uart.c`
-  - `0004-btmtk_define-MAX-MIN-guard-linux_v2.patch` — Guards `MAX`/`MIN` in `btmtk_define.h` (linux_v2)
-  - `0005-btmtk_define-MAX-MIN-guard-mt66xx.patch` — Guards `MAX`/`MIN` in `btmtk_define.h` (mt66xx)
-  - `0006-mali_malisw-MAX-MIN-guard.patch` — Guards `MAX`/`MIN` in `mali_malisw.h` (vendor)
-  - `0007-mtk-mae-MAX-MIN-guard.patch` — Guards `MAX`/`MIN` in `mtk-mae-isp8.c`
-  - `0008-mali_kbase_js-cred-fix.patch` — Fixes `get_current_cred_module` → `get_current_cred` in Mali driver
-  - `0009-mali_csf_scheduler-cred-fix.patch` — Same cred fix for CSF scheduler
-  - `0010-remaining-device-vendor-fixes.patch` — Covers remaining 75 files (all `kernel/kernel_device_modules-6.6` MAX/MIN batch: `zsmalloc.c`, `stmmac_main.c`, `rpmb-mtk.c`, `cpufreq_limit.c`, 30+ thermal `tscpu_settings.h`, `mali_malisw.h` kernel copy, Samsung PM `Kconfig`/`Makefile`/`sec_wakeup_cpu_allocator.c`, `ufs-sec-feature.c`, `sha256/sha512-internal.c` wlan, `disable_module_sig.config` etc.)
-  - `0000-all-kernel-compat.patch` — **Consolidated** patch with all 84 files above (alternative single-file apply; auto-skipped when split patches exist)
+- `compat-kernel-6.6/` — **empty of `.patch` files on purpose.**
+  All kernel-6.6 compatibility fixes are baked into the source tree
+  (`kernel-6.6/`, `kernel/kernel_device_modules-6.6/`, `vendor/`), so they are
+  always in effect and can never fail to apply. See
+  [`compat-kernel-6.6/README.md`](compat-kernel-6.6/README.md) for the full list
+  of what is fixed and how to carry the fixes over to a newer kernel tree.
+  `build_kernel.sh → apply_compat_patches()` still auto-applies any `.patch`
+  you drop in there, so the mechanism stays available for future fixes.
 
-  **These are applied automatically** by `build_kernel.sh:apply_compat_patches()` on every build,
-  even without `custom_patches=true`. When you update `kernel-6.6` to a newer version,
-  just re-apply this folder: `git apply patch/compat-kernel-6.6/*.patch` or enable the auto-apply.
+- `*.patch` (root of `patch/`) — **optional extra patches**, applied only when
+  the workflow input `custom_patches: true` is set
+  (`build_kernel.sh → apply_optional_patches`). Put your own patches here; they
+  are applied with `patch -p1` **inside the kernel tree**, i.e. paths start at
+  `security/…`, `drivers/…`, not at `kernel-6.6/…`.
 
-- `*.patch` (root of `patch/`) — **Custom patches** applied only when `custom_patches=true` is enabled
-  in the GitHub Actions workflow. Place your own `.patch` files here.
+- `../Permissive/selinux-make-permissive.patch` — applied only when the workflow
+  input `permissive: true` is set. Also `-p1` inside the kernel tree.
 
-## Usage
+## Order used by the build
 
-### Automatic (compat patches)
-No action needed. `build_kernel.sh` will automatically apply `patch/compat-kernel-6.6/*.patch`
-during `apply_compat_fixes` before building. If a patch is already applied, it is skipped (`--forward`).
+`build_kernel.sh` (`prepare_workspace`):
 
-### Manual / Custom
-1. Place your `.patch` files in `patch/` (e.g., `patch/my-feature.patch`)
-2. In GitHub Actions, set `custom_patches: true` when dispatching the workflow
-3. Or locally: `bash build_kernel.sh` will ask or you can set `CUSTOM_PATCH=true`
+1. `apply_optional_patches` — `Permissive/` (if `PERMISSIVE=true`) then
+   `patch/*.patch` (if `CUSTOM_PATCH=true`), on the source tree
+2. copy the tree into the bazel workspace (`kernel/kernel-6.6/`)
+3. `apply_compat_patches` — every `patch/compat-kernel-6.6/*.patch` (currently
+   none), with `patch -p1 --forward`, so re-applying is harmless
+4. `apply_compat_fixes` — inline `sed`/header safety net (loop.h, MAX/MIN,
+   SEC_PM, module signing) that repairs the workspace copy even if a source
+   file is ever reverted
 
-### When updating kernel-6.6
-1. Replace `kernel-6.6/` with the new version
-2. Run: `for p in patch/compat-kernel-6.6/*.patch; do patch -p1 --forward < "$p" || echo "Skip $p"; done`
-3. If a patch fails, update it and commit the new version.
-
-## Generating new compat patches
-After fixing a new build error, generate a patch:
-```bash
-git diff 8c2413e78..HEAD -- kernel-6.6/ kernel/ vendor/ > patch/compat-kernel-6.6/0011-my-fix.patch
-# And refresh the consolidated file:
-git diff 8c2413e78..HEAD -- kernel-6.6/ kernel/ vendor/ > patch/compat-kernel-6.6/0000-all-kernel-compat.patch
-```
+CI job **`#4 Patches`** dry-runs everything in 1–2 minutes and greps the tree
+for the baked-in fixes *before* the 50-minute build starts.

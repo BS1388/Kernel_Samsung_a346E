@@ -1,95 +1,90 @@
-# Kernel 6.6 Compatibility Patches
+# Kernel 6.6 Compatibility Fixes
 
-These patches fix build errors when building Samsung A346E (MediaTek mt6877) device modules
-against a newer kernel-6.6 (common-android15-6.6).
+**This folder is intentionally empty of `.patch` files.**
+All 84+ compatibility fixes are now **baked directly into the source tree**
+(`kernel-6.6/`, `kernel/kernel_device_modules-6.6/`, `vendor/`), so every build
+has them, always, with nothing to apply and nothing that can fail to apply.
 
-## Why?
+`build_kernel.sh → apply_compat_patches()` still scans this folder on every
+build: if you ever drop a `.patch` file here it is applied automatically
+(`patch -p1 --forward`), so the mechanism is intact for future one-off fixes.
 
-Samsung's device modules were written for an older kernel and use APIs that changed in 6.6:
-- `MAX`/`MIN` macros moved to `linux/minmax.h` and now collide with driver-local defines
-- `struct loop_device` moved out of `linux/loop.h`
-- `get_current_cred_module` renamed to `get_current_cred`
-- `modules.order` now contains duplicate same-path entries for `sec_thermistor`
+---
 
-Instead of editing files manually each time you update `kernel-6.6`, these patches can be
-re-applied automatically.
+## What is fixed in the tree (and how to check it)
 
-## Golden rule: `kernel-6.6/` stays PRISTINE
+Samsung's device/vendor modules were written for an older kernel; these are the
+changes that make them build against 6.6 (`common-android15-6.6`, 6.6.142):
 
-`kernel-6.6/` in this repo is a **verbatim, unmodified upstream tree (6.6.142)** — it is kept
-byte-identical to `A346E:kernel-6.6`. **Never edit it directly.** Every change we need lives
-in this folder as a `.patch` file and is applied at build time by
-`build_kernel.sh → apply_compat_patches()`, which runs *after* the tree has been copied into
-the bazel workspace (`kernel/kernel-6.6/`). So the patched files only ever exist in the build
-copy; the repo copy stays clean.
+| # | area | files | fix |
+|---|---|---|---|
+| 1 | `modules.order` duplicates | `kernel-6.6/scripts/modules-check.sh` | dedup with `sort -u`; only a *different path* with the same basename is an error (`sec_thermistor`) |
+| 2 | `struct loop_device` moved out of the header in 6.6 | `kernel-6.6/include/linux/loop.h` | header restored, `zram_ext.c` needs `lo->lo_backing_file` |
+| 3 | `MAX`/`MIN` now live in `linux/minmax.h` and collide with driver-local defines | `stp_uart.c`, `btmtk_define.h` (x2), `mali_malisw.h` (x2), `mtk-mae-isp8.c`, `zsmalloc.c`, 30+ thermal `tscpu_settings.h`, `rpmb-mtk.c`, `cpufreq_limit.c`, ged/gpufreq/drm/mdpm/blocktag … | `#include <linux/minmax.h>` + `#ifndef MAX` / `#ifndef MIN` guards |
+| 4 | Samsung-only cred API | mali `mali_kbase_js.c`, `mali_csf_scheduler.c` | `get_current_cred_module()`/`put_cred_module()` → vanilla `get_current_cred()`/`put_cred()` |
+| 5 | VLA build error | `stmmac_main.c` | `max_t()` statement-expression → constant |
+| 6 | `UFS_CMD_ERR` removed in 6.6 | `ufs-sec-feature.c` | fall back to `UFS_TM_ERR` |
+| 7 | Samsung PM | `drivers/samsung/pm/{Kconfig,Makefile}`, `sec_wakeup_cpu_allocator.c` | add `config SEC_PM`, add `sec_thermistor/` to the Makefile, drop the private `kernel/power/power.h` include |
+| 8 | module signing in the bazel sandbox | `kernel/configs/disable_module_sig.config` | signing disabled for custom builds |
+| 9 | **Samsung KDP (Knox) cred symbols** | `kernel-6.6/kernel/cred.c`, `kernel-6.6/include/linux/cred.h` | see below |
 
-Why: when you bump/replace `kernel-6.6` with a newer upstream tree, you just drop the new tree
-in and rebuild — no merge conflicts, no lost fixes, nothing to remember.
+### #9 in detail — the one that killed Bluetooth
 
-New fix needed? Do it like this:
-```bash
-# edit the file inside the *build copy* or the repo copy, then:
-git diff -- kernel-6.6/ > patch/compat-kernel-6.6/00NN-short-name.patch
-git checkout -- kernel-6.6/            # <-- put the tree back to pristine
+Samsung's stock kernel is built with `CONFIG_KDP_CRED=y`, so the inline helpers
+in their `<linux/cred.h>` (`get_cred()`, `get_cred_rcu()`, `put_cred()`,
+`get_new_cred()`) call `kdp_usecount_inc()` / `kdp_usecount_inc_not_zero()` /
+`kdp_usecount_dec_and_test()` / `kdp_set_cred_non_rcu()` instead of touching
+`cred->usage` and `cred->non_rcu` directly. Every **prebuilt stock module**
+that takes a cred reference therefore has undefined references to those
+symbols; on a plain GKI kernel they do not exist:
+
+```
+bluetooth: Unknown symbol kdp_set_cred_non_rcu (err -2)
+bluetooth: Unknown symbol kdp_usecount_inc (err -2)
+bt_drv_6877: Unknown symbol hci_register_dev (err -2)     <- cascade
 ```
 
-## Auto-apply
+On a34x with the stock ROM this killed Bluetooth completely (`/system_dlkm`
+`bluetooth.ko`, `rfcomm.ko`, `hidp.ko`, `hci_uart.ko`, `btsdio.ko`, `btbcm.ko`,
+`btqca.ko` all failed to load, no `/dev/stpbt`, `com.android.bluetooth` died).
 
-`build_kernel.sh` → `apply_compat_patches()` runs on every build:
+The fix does **not** implement KDP — creds stay ordinary kernel objects — it
+only exports the vanilla behaviour under those names (plus `kdp_get_usecount`,
+`is_kdp_protect_addr`, `security_integrity_current`, `kdp_enable`), guarded by
+`#ifndef CONFIG_KDP_CRED` so a real KDP tree is unaffected.
+
+CI (`#4 Patches`) greps for all of the above on every run, so a fix can never
+silently disappear from the tree.
+
+---
+
+## Updating `kernel-6.6` to a newer upstream tree
+
+The fixes are in the tree, so a straight replacement of `kernel-6.6/` would
+drop them. Do it like this:
+
 ```bash
-for p in patch/compat-kernel-6.6/*.patch; do
-  patch -p1 --forward --batch < "$p" || true
-done
-```
-If already applied, `--forward` skips it.
+# 1. save what we changed against the last pristine base (A346E branch @ 8c2413e78)
+git diff 8c2413e78 -- kernel-6.6/ > /tmp/a346e-kernel-fixes.patch
 
-## Manual apply
-```bash
-git apply patch/compat-kernel-6.6/*.patch
-# or
-for p in patch/compat-kernel-6.6/*.patch; do patch -p1 < "$p"; done
-```
+# 2. drop in the new tree, then re-apply
+patch -p1 --forward < /tmp/a346e-kernel-fixes.patch
+#    ... fix whatever rejects, then rebuild
 
-## List (84 files total, no file missed — `0000` = all)
-- `0001` — `modules-check.sh` dedup (`kernel-6.6/scripts/modules-check.sh`)
-- `0002` — `loop.h` restore (`kernel-6.6/include/linux/loop.h`)
-- `0003-0007` — `MAX`/`MIN` guards vendor (stp_uart, btmtk x2, mali_malisw vendor, mtk-mae)
-- `0008-0009` — `cred` fixes vendor Mali (`mali_kbase_js.c`, `mali_csf_scheduler.c`)
-- `0010` — remaining 75 files: all `kernel/kernel_device_modules-6.6` MAX/MIN batch (zsmalloc, stmmac VLA, rpmb, cpufreq, ged_dvfs, gpufreq, drm, 30+ thermal tscpu/tspmic, mdpm, blocktag, etc.) + Samsung PM (`Kconfig` SEC_PM, `Makefile`, `sec_wakeup_cpu_allocator.c` power.h), UFS (`ufs-sec-feature.c`), wlan `sha256/sha512-internal.c` (gen4m/s1), `disable_module_sig.config`, and `kernel/.../mali_malisw.h` kernel copy
-- `0000` — consolidated single-file version of all 84 files (auto-skipped when splits exist — see `build_kernel.sh:apply_compat_patches`)
-- `0011` — *(removed)* zram `default_compressor` quoting. The pristine 6.6.142 tree already has
-  the correct upstream line `static const char *default_compressor = CONFIG_ZRAM_DEF_COMP;`,
-  so the fix is only needed if someone hand-edits `zram_drv.c` again (the old broken line was
-  `= lzo-rle;` without quotes → `error: use of undeclared identifier 'lzo'`).
-- `0012` — **Samsung KDP (Knox) cred compat symbols** (`kernel-6.6/kernel/cred.c`, `kernel-6.6/include/linux/cred.h`).
-  Samsung's stock kernel is built with `CONFIG_KDP_CRED=y`, so the inline helpers in their
-  `<linux/cred.h>` (`get_cred()`, `get_cred_rcu()`, `put_cred()`, `get_new_cred()`) call
-  `kdp_usecount_inc()` / `kdp_usecount_inc_not_zero()` / `kdp_usecount_dec_and_test()` /
-  `kdp_set_cred_non_rcu()` instead of touching `cred->usage` and `cred->non_rcu` directly.
-  Every **prebuilt stock module** that takes a cred reference therefore has undefined
-  references to those symbols; on a plain GKI kernel they do not exist and the module is
-  rejected:
-  ```
-  bluetooth: Unknown symbol kdp_set_cred_non_rcu (err -2)
-  bluetooth: Unknown symbol kdp_usecount_inc (err -2)
-  bluetooth: Unknown symbol kdp_usecount_dec_and_test (err -2)
-  bt_drv_6877: Unknown symbol hci_register_dev (err -2)     <- cascade
-  ```
-  On a34x running the stock ROM this kills Bluetooth completely (`/system_dlkm` modules
-  `bluetooth.ko`, `rfcomm.ko`, `hidp.ko`, `hci_uart.ko`, `btsdio.ko`, `btbcm.ko`, `btqca.ko`
-  all fail to load; the BT HAL then gets `fd -1` and `com.android.bluetooth` dies).
-  The patch does **not** implement KDP — creds stay ordinary kernel objects — it only
-  exports the vanilla behaviour under those names (plus `kdp_get_usecount`,
-  `is_kdp_protect_addr`, `security_integrity_current`, `kdp_enable`), guarded by
-  `#ifndef CONFIG_KDP_CRED` so a real KDP tree is unaffected.
-
-## Updating
-When you bump `kernel-6.6`, test build. If it fails, fix the file, then:
-```bash
-git diff 8c2413e78..HEAD -- kernel-6.6/ kernel/ vendor/ > patch/compat-kernel-6.6/0013-my-new-fix.patch
-git add patch/compat-kernel-6.6/0013-my-new-fix.patch
-# Or regenerate the consolidated 0000:
-git diff 8c2413e78..HEAD -- kernel-6.6/ kernel/ vendor/ > patch/compat-kernel-6.6/0000-all-kernel-compat.patch
+# 3. optional: keep the patch here so the next update is easier
+cp /tmp/a346e-kernel-fixes.patch patch/compat-kernel-6.6/0001-kernel-6.6-fixes.patch
 ```
 
-Current set was generated from `8c2413e78..c16b631e4` — 84 files, 75KB (see `0000`), no file left.
+Older revisions of the split patches (`0000`…`0012`) are still in git history if
+you need them:
+
+```bash
+git log --oneline -- patch/compat-kernel-6.6/
+git show <commit>:patch/compat-kernel-6.6/0012-add-samsung-kdp-cred-compat-symbols.patch
+```
+
+## Other patch folders
+
+* `Permissive/selinux-make-permissive.patch` — applied only when the workflow
+  input `permissive: true` is set (`build_kernel.sh → apply_optional_patches`).
+* `patch/*.patch` (top level) — applied only when `custom_patches: true`.

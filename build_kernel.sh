@@ -24,8 +24,11 @@
 #   CUSTOM_PATCH=true|false   also apply patch/*.patch (top level)
 #   KSU_VAR                   informational only; the workflow installs KSU
 #
-# kernel-6.6/ is kept PRISTINE in git: never edit it, add a patch to
-# patch/compat-kernel-6.6/ instead (see that folder's README.md).
+# kernel-6.6/ carries the compat fixes directly in the tree (that is why
+# patch/compat-kernel-6.6/ has no .patch files). apply_compat_patches() still
+# applies anything you drop in that folder, and apply_compat_fixes() repairs the
+# workspace copy inline as a safety net. See patch/compat-kernel-6.6/README.md
+# before replacing kernel-6.6/ with a newer upstream tree.
 #
 # Compat patches:
 #   Patches in patch/compat-kernel-6.6/ are auto-applied via

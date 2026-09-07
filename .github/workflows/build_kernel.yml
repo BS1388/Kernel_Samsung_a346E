@@ -232,16 +232,21 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
-      - name: Compat patches (always applied)
+      # The compat fixes are baked into the source tree, so this folder is
+      # normally empty; any .patch dropped in there is still auto-applied by
+      # build_kernel.sh, so dry-run whatever is present.
+      - name: Compat patches (patch/compat-kernel-6.6/, if any)
         run: |
           set -eu
           KDIR="${{ needs.detect.outputs.real_dir }}"
           DIR="patch/compat-kernel-6.6"
-          [ -d "$DIR" ] || { echo "::error::$DIR missing"; exit 1; }
           shopt -s nullglob
           ALL=("$DIR"/*.patch)
           shopt -u nullglob
-          [ ${#ALL[@]} -gt 0 ] || { echo "::error::no compat patches found"; exit 1; }
+          if [ ${#ALL[@]} -eq 0 ]; then
+            echo "no .patch files - all compat fixes are baked into the source tree (verified in the next step)"
+            exit 0
+          fi
 
           FAIL=0
           for p in "${ALL[@]}"; do
@@ -261,6 +266,54 @@ jobs:
           done
           [ "$FAIL" = "0" ] || { echo "::error::at least one compat patch does not apply to $KDIR"; exit 1; }
           echo "compat patches: ${#ALL[@]} checked"
+
+      # Guard: the compat fixes live in the tree now, so make sure none of them
+      # was lost (bad merge, kernel-6.6 replaced, someone reverted a file...).
+      # This is the cheap replacement for dry-running the old 0001..0012 files.
+      - name: Verify baked-in compat fixes
+        run: |
+          set -eu
+          KDIR="${{ needs.detect.outputs.real_dir }}"
+          FAIL=0
+          check() { # check <description> <file> <grep-pattern>
+            if [ -f "$2" ] && grep -q "$3" "$2"; then
+              echo "OK      $1"
+            else
+              echo "::error::MISSING $1  ($2)"; FAIL=1
+            fi
+          }
+          check "loop.h restored for zram_ext"        "$KDIR/include/linux/loop.h"          "lo_backing_file"
+          check "modules.order dedup (sec_thermistor)" "$KDIR/scripts/modules-check.sh"     "sort -u"
+          check "KDP cred symbols exported"            "$KDIR/kernel/cred.c"                "EXPORT_SYMBOL(kdp_usecount_inc)"
+          check "KDP cred symbols declared"            "$KDIR/include/linux/cred.h"         "kdp_set_cred_non_rcu"
+          check "SEC_PM Kconfig"                       "$KDIR/../kernel/kernel_device_modules-6.6/drivers/samsung/pm/Kconfig" "config SEC_PM"
+          check "MAX/MIN guard (stp_uart)"             "vendor/mediatek/kernel_modules/connectivity/common/common_main/linux/stp_uart.c" "#ifndef MAX"
+
+          # zram: the upstream line is `= CONFIG_ZRAM_DEF_COMP;`. A hand-edit
+          # once turned it into `= lzo-rle;` (no quotes) -> build error.
+          Z="$KDIR/drivers/block/zram/zram_drv.c"
+          if grep -qE '^static const char \*default_compressor = (CONFIG_ZRAM_DEF_COMP|"[a-z0-9-]+");' "$Z"; then
+            echo "OK      zram default_compressor is valid C"
+          else
+            echo "::error::BROKEN zram default_compressor:"; grep -n "default_compressor =" "$Z" || true; FAIL=1
+          fi
+
+          # Samsung-only cred API must be gone from the modules we build
+          # (kernel 6.6 has no *_module variants). NOTE: unused duplicates under
+          # kernel/kernel_device_modules-6.6/drivers/gpu/... and mbraink still
+          # contain it -- they are not compiled in this configuration, so they
+          # are only reported as a warning.
+          if grep -rl --include=*.c --include=*.h "get_current_cred_module\|put_cred_module" vendor 2>/dev/null | grep -q .; then
+            echo "::error::get_current_cred_module/put_cred_module still present in vendor/:"
+            grep -rl --include=*.c --include=*.h "get_current_cred_module\|put_cred_module" vendor 2>/dev/null | sed 's/^/          /'
+            FAIL=1
+          else
+            echo "OK      no Samsung-only cred API in vendor/ (the modules we build)"
+          fi
+          N=$(grep -rl --include=*.c "get_current_cred_module\|put_cred_module" kernel 2>/dev/null | wc -l)
+          [ "$N" = "0" ] || echo "NOTE    $N uncompiled file(s) under kernel/ still use the old cred API (harmless)"
+
+          [ "$FAIL" = "0" ] || { echo "::error::a compat fix is missing from the source tree - the build would fail"; exit 1; }
 
       - name: SELinux permissive patch (PERMISSIVE=true)
         if: env.PERMISSIVE == 'true'
