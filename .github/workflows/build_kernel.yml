@@ -46,7 +46,6 @@ permissions:
 env:
   G_WORKSPACE: ${{ github.workspace }}
   G_EXT: ${{ github.workspace }}/external_deps
-  KSU_VAR: ${{ matrix.ksu_variant || github.event.inputs.ksu_variant || 'NO-ROOT' }}
   PERMISSIVE: ${{ github.event.inputs.permissive || 'false' }}
   CUSTOM_PATCH: ${{ github.event.inputs.custom_patches || 'false' }}
 
@@ -58,6 +57,8 @@ jobs:
       fail-fast: false
     runs-on: ubuntu-22.04
     timeout-minutes: 300
+    env:
+      KSU_VAR: ${{ matrix.ksu_variant || github.event.inputs.ksu_variant || 'NO-ROOT' }}
 
     steps:
       # ======================================================================
