@@ -10,13 +10,22 @@
 #   3. sync_aosp_kernel       -- sync common-android15-6.6
 #   4. link_prebuilts         -- prebuilts & external tools
 #   5. prepare_workspace      -- fix bazel sandbox (rsync, FDO, sig)
-#      5c. stamp_ksu_version    -- embed real KernelSU-Next version (not v0.0.1)
-#      5a. apply_compat_patches  -- auto-apply patch/compat-kernel-6.6/*.patch
-#      5b. apply_compat_fixes    -- inline sed/header fixes (loop.h, MAX/MIN...)
+#      5a-0. apply_optional_patches -- PERMISSIVE / CUSTOM_PATCH build options
+#      5a.   apply_compat_patches   -- auto-apply patch/compat-kernel-6.6/*.patch
+#      5b.   apply_compat_fixes     -- inline sed/header fixes (loop.h, MAX/MIN...)
+#      5c.   stamp_ksu_version      -- embed real KernelSU-Next version (not v0.0.1)
 #   6. patch_stamp            -- stamp.bzl & shebang fixes
 #   7. generate_build_config  -- gen_build_config.py
 #   8. run_kernel_build       -- bazel build
 #   9. collect_image          -- gather Image
+#
+# Build options (env vars, set by .github/workflows/build_kernel.yml):
+#   PERMISSIVE=true|false     apply Permissive/selinux-make-permissive.patch
+#   CUSTOM_PATCH=true|false   also apply patch/*.patch (top level)
+#   KSU_VAR                   informational only; the workflow installs KSU
+#
+# kernel-6.6/ is kept PRISTINE in git: never edit it, add a patch to
+# patch/compat-kernel-6.6/ instead (see that folder's README.md).
 #
 # Compat patches:
 #   Patches in patch/compat-kernel-6.6/ are auto-applied via
@@ -153,8 +162,13 @@ sync_aosp_kernel() {
       break
     fi
     warn "repo sync failed attempt $attempt"
+    # NOTE: `[ x ] && die` as the last statement of the loop body would make
+    # the body return 1 on attempts 1 and 2 -> `set -e` + ERR trap would abort
+    # the whole build instead of retrying. Use a real if.
+    if [ "$attempt" -eq 3 ]; then
+      die "repo sync failed after 3 attempts"
+    fi
     sleep 10
-    [ "$attempt" -eq 3 ] && die "repo sync failed after 3 attempts"
   done
 
   popd >/dev/null
@@ -187,6 +201,56 @@ link_prebuilts() {
       ok "Linked $dst -> $src"
     fi
   done
+}
+
+# ------------------------------------------------------------------------------
+# 5a-0. Optional patches driven by the build options (CI inputs / env vars):
+#         PERMISSIVE=true    -> Permissive/selinux-make-permissive.patch
+#         CUSTOM_PATCH=true  -> patch/*.patch (top level only)
+#       patch/compat-kernel-6.6/*.patch is ALWAYS applied, see 5a below.
+#
+#       These are applied to the SOURCE tree (kernel-6.6/) before it is copied
+#       into the bazel workspace. Previously the workflow did this in a separate
+#       job, on a runner that was thrown away afterwards, so `permissive: true`
+#       silently produced an ENFORCING kernel. Doing it here means the flag
+#       works the same in CI and in a local build.
+# ------------------------------------------------------------------------------
+apply_optional_patches() {
+  local kdir
+  kdir="$(detect_kernel_dir)"
+
+  if [ "${PERMISSIVE:-false}" = "true" ]; then
+    local pp="${ROOT_DIR}/Permissive/selinux-make-permissive.patch"
+    [ -f "$pp" ] || die "PERMISSIVE=true but $pp not found"
+    log "PERMISSIVE=true -> applying $(basename "$pp") to $kdir"
+    if patch -p1 -d "$kdir" --forward --batch < "$pp" >/tmp/permissive.log 2>&1; then
+      ok "SELinux permissive patch applied"
+    elif grep -q "Reversed (or previously applied)" /tmp/permissive.log; then
+      ok "SELinux permissive patch already applied"
+    else
+      cat /tmp/permissive.log >&2
+      die "PERMISSIVE=true but the permissive patch failed to apply"
+    fi
+    grep -n "selinux_enforcing_boot" "${kdir}/security/selinux/hooks.c" | head -n 3 || true
+  else
+    log "PERMISSIVE=false -> SELinux stays enforcing"
+  fi
+
+  if [ "${CUSTOM_PATCH:-false}" = "true" ]; then
+    shopt -s nullglob
+    local extra=("${ROOT_DIR}/patch"/*.patch)
+    shopt -u nullglob
+    if [ ${#extra[@]} -eq 0 ]; then
+      warn "CUSTOM_PATCH=true but patch/ has no *.patch files (patch/compat-kernel-6.6/ is applied anyway)"
+    else
+      log "CUSTOM_PATCH=true -> applying ${#extra[@]} extra patch(es) to $kdir"
+      local p
+      for p in "${extra[@]}"; do
+        log "Applying $(basename "$p")"
+        patch -p1 -d "$kdir" --forward --batch < "$p" || warn "$(basename "$p") failed or was already applied"
+      done
+    fi
+  fi
 }
 
 # ------------------------------------------------------------------------------
@@ -689,6 +753,10 @@ stamp_ksu_version() {
 # ------------------------------------------------------------------------------
 prepare_workspace() {
   log "Preparing kernel/ workspace (fix bazel sandbox)"
+
+  # Build-option patches (permissive / extra) go on the SOURCE tree first,
+  # so the copy below carries them into the bazel workspace.
+  apply_optional_patches
 
   local real_kernel_dir
   real_kernel_dir="$(detect_kernel_dir)"
