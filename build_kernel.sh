@@ -321,6 +321,55 @@ LOOP_EOF
     fi
   done
 
+  # --- Fix 2d: vendor/mediatek MAX/MIN redefinition (stp_uart.c, btmtk_define.h, etc.) ---
+  # Error: vendor/mediatek/kernel_modules/connectivity/common/common_main/linux/stp_uart.c:47:9 error: 'MAX' macro redefined
+  # And btmtk_define.h MAX/MIN redefined
+  # New kernel's include/linux/minmax.h defines MIN/MAX, vendor drivers define their own
+  # Solution: remove bare custom MIN/MAX and include minmax.h (or guard). Use broad scan over vendor.
+  log "Broad MIN/MAX cleanup in vendor/mediatek"
+  local vendor_dirs=(
+    "${ROOT_DIR}/vendor/mediatek/kernel_modules"
+    "../vendor/mediatek/kernel_modules"
+    "vendor/mediatek/kernel_modules"
+    "${ROOT_DIR}/vendor"
+    "../vendor"
+  )
+  for vd in "${vendor_dirs[@]}"; do
+    if [ -d "$vd" ]; then
+      log "Scanning $vd for MIN/MAX redefinition"
+      find "$vd" \( -name "*.c" -o -name "*.h" \) -type f | while read -r f; do
+        if grep -q "^#define[[:space:]]*MAX[[:space:]]*(" "$f" 2>/dev/null || \
+           grep -q "^#define[[:space:]]*MIN[[:space:]]*(" "$f" 2>/dev/null; then
+          if grep -q "^#define[[:space:]]*MAX[[:space:]]*([a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*,[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*)" "$f" || \
+             grep -q "^#define[[:space:]]*MIN[[:space:]]*([a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*,[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*)" "$f"; then
+            # Skip files already guarded with #ifndef MAX/MIN (our committed fix)
+            if grep -B2 "^#define[[:space:]]*MAX[[:space:]]*(" "$f" | grep -q "#ifndef MAX" 2>/dev/null; then
+              # Check if both MAX and MIN are guarded; if so skip
+              if grep -B2 "^#define[[:space:]]*MIN[[:space:]]*(" "$f" | grep -q "#ifndef MIN" 2>/dev/null; then
+                continue
+              fi
+            fi
+            log "Cleaning $f"
+            sed -i '/^#define[[:space:]]*MAX[[:space:]]*([a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*,[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*)/d' "$f" || true
+            sed -i '/^#define[[:space:]]*MIN[[:space:]]*([a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*,[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*)/d' "$f" || true
+            # Clean up orphaned guards left after deleting inner defines (e.g., #ifndef MAX / #endif empty blocks)
+            # Remove empty #ifndef MAX ... #endif blocks with no content
+            # This is a best-effort cleanup; leave if not empty
+            if ! grep -q "linux/minmax.h" "$f"; then
+              if grep -q "#include <linux/kernel.h>" "$f"; then
+                sed -i 's|#include <linux/kernel.h>|#include <linux/kernel.h>\n#include <linux/minmax.h>|' "$f" || true
+              else
+                sed -i '1i #include <linux/minmax.h>' "$f" || true
+              fi
+            fi
+          fi
+        fi
+      done
+      # Only scan first found vendor dir to avoid duplicate work
+      break
+    fi
+  done
+
   # --- Fix 2a: stmmac VLA error with max_t ---
   # Error: stmmac_main.c:2855:13: error: variable length array used [-Werror,-Wvla]
   # int status[max_t(u32, MTL_MAX_TX_QUEUES, MTL_MAX_RX_QUEUES)];

@@ -44,8 +44,14 @@
 
 #define HCIUARTSETPROTO        _IOW('U', 200, int)
 
+#include <linux/minmax.h>
+/* compat: guard MAX/MIN redefinition (kernel-6.6 minmax.h) */
+#ifndef MAX
 #define MAX(a, b)        ((a) > (b) ? (a) : (b))
+#endif
+#ifndef MIN
 #define MIN(a, b)        ((a) < (b) ? (a) : (b))
+#endif
 
 #define PFX                         "[UART] "
 #define UART_LOG_LOUD                 4

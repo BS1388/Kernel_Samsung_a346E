@@ -132,8 +132,14 @@
 #define IS_NOT_ALIGN_4(_value)      (((_value) & 0x3) ? TRUE : FALSE)
 #endif /* IS_NOT_ALIGN_4 */
 
+#include <linux/minmax.h>
+/* compat: guard MIN/MAX for kernel-6.6 minmax.h */
+#ifndef MIN
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
+#endif
+#ifndef MAX
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
+#endif
 
 
 /**

@@ -12,6 +12,7 @@
  */
 
 #include "wpa_supp/FourWayHandShake.h"
+#include <linux/minmax.h>
 
 #include "wpa_supp/src/crypto/crypto.h"
 #include "wpa_supp/src/crypto/sha256.h"
