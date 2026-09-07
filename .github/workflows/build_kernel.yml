@@ -33,12 +33,12 @@ on:
           - KSUN-SUSFS-v1.5.12
         default: KSUN
       permissive:
-        description: "Make SELinux permissive? (Permissive/selinux-make-permissive.patch)"
+        description: "Make SELinux permissive?"
         type: boolean
         required: true
         default: false
       custom_patches:
-        description: "Also apply extra patches from patch/*.patch? (kernel/patches-kernel-6.6/* is ALWAYS applied)"
+        description: "Also apply extra patches from patch/*.patch?"
         type: boolean
         required: true
         default: false
@@ -46,9 +46,6 @@ on:
     branches:
       - A346E
       - a346E-Stock
-      - Google
-      - Test-Build
-      - "arena/**"
   pull_request:
     branches:
       - A346E
