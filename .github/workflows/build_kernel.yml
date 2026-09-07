@@ -24,14 +24,6 @@ on:
           - KSUN
           - KSUN-SUSFS-v1.5.12
         default: NO-ROOT
-      ksun_ref:
-        description: "KSUN source ref (KSUN variant only). dev = newest code, latest-tag = last release"
-        required: false
-        type: choice
-        options:
-          - "dev (latest)"
-          - "latest-tag"
-        default: "dev (latest)"
       permissive:
         description: "Make SELinux permissive?"
         type: boolean
@@ -64,7 +56,6 @@ env:
   G_WORKSPACE: ${{ github.workspace }}
   G_EXT: ${{ github.workspace }}/external_deps
   KSU_VAR: ${{ github.event.inputs.ksu_variant || 'NO-ROOT' }}
-  KSUN_REF: ${{ github.event.inputs.ksun_ref || 'dev (latest)' }}
   PERMISSIVE: ${{ github.event.inputs.permissive || 'false' }}
   CUSTOM_PATCH: ${{ github.event.inputs.custom_patches || 'false' }}
 
@@ -121,7 +112,7 @@ jobs:
           fi
           echo "### #1 Checkout & Detect" >> $GITHUB_STEP_SUMMARY
           echo "- **KSU variant (chosen):** \`${{ env.KSU_VAR }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **KSUN ref:** \`${{ env.KSUN_REF }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **KSUN source:** \`dev branch HEAD (latest at run time)\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Kernel dir:** \`$REAL_DIR\`" >> $GITHUB_STEP_SUMMARY
 
   # ======================================================================
@@ -580,15 +571,12 @@ jobs:
           rm -rf KernelSU-Next || true
           case "${{ env.KSU_VAR }}" in
             "KSUN")
-              echo "Adding KernelSU-Next (ref: ${{ env.KSUN_REF }})"
+              # Always build the very latest KernelSU-Next: dev branch HEAD at run time.
+              # setup.sh makes a FRESH git clone on every run, so even a year from now
+              # this picks up whatever is newest on dev. No tag checkout, no input needed.
+              echo "Adding KernelSU-Next (dev branch HEAD = latest at run time)"
               curl -LSs --retry 3 "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/refs/heads/dev/kernel/setup.sh" -o /tmp/ksun_setup.sh
-              if [ "${{ env.KSUN_REF }}" = "latest-tag" ]; then
-                echo "Using latest release tag (no arg -> setup.sh checks out latest tag)"
-                sh /tmp/ksun_setup.sh
-              else
-                echo "Using dev branch HEAD (the very latest KernelSU-Next)"
-                sh /tmp/ksun_setup.sh dev
-              fi
+              sh /tmp/ksun_setup.sh dev
               ;;
             "KSUN-SUSFS-v1.5.12")
               echo "Adding KernelSU-Next (next-1) for SUSFS"
@@ -815,15 +803,10 @@ jobs:
           rm -rf KernelSU-Next || true
           case "${{ env.KSU_VAR }}" in
             "KSUN")
-              echo "Adding KernelSU-Next (ref: ${{ env.KSUN_REF }}) for build job"
+              # Same as job #5: always dev branch HEAD (latest at run time).
+              echo "Adding KernelSU-Next (dev branch HEAD = latest at run time) for build job"
               curl -LSs --retry 3 "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/refs/heads/dev/kernel/setup.sh" -o /tmp/ksun_setup.sh
-              if [ "${{ env.KSUN_REF }}" = "latest-tag" ]; then
-                echo "Using latest release tag (no arg -> setup.sh checks out latest tag)"
-                sh /tmp/ksun_setup.sh
-              else
-                echo "Using dev branch HEAD (the very latest KernelSU-Next)"
-                sh /tmp/ksun_setup.sh dev
-              fi
+              sh /tmp/ksun_setup.sh dev
               ;;
             "KSUN-SUSFS-v1.5.12")
               echo "Adding KernelSU-Next (next-1) for SUSFS in build job"
