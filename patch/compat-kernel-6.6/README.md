@@ -31,16 +31,21 @@ git apply patch/compat-kernel-6.6/*.patch
 for p in patch/compat-kernel-6.6/*.patch; do patch -p1 < "$p"; done
 ```
 
-## List
-- `0001` — `modules-check.sh` dedup
-- `0002` — `loop.h` restore
-- `0003-0007` — `MAX`/`MIN` guards (stp_uart, btmtk, mali, mtk-mae)
-- `0008-0009` — `cred` fixes (Mali)
-- `0000` — consolidated single-file version
+## List (84 files total, no file missed — `0000` = all)
+- `0001` — `modules-check.sh` dedup (`kernel-6.6/scripts/modules-check.sh`)
+- `0002` — `loop.h` restore (`kernel-6.6/include/linux/loop.h`)
+- `0003-0007` — `MAX`/`MIN` guards vendor (stp_uart, btmtk x2, mali_malisw vendor, mtk-mae)
+- `0008-0009` — `cred` fixes vendor Mali (`mali_kbase_js.c`, `mali_csf_scheduler.c`)
+- `0010` — remaining 75 files: all `kernel/kernel_device_modules-6.6` MAX/MIN batch (zsmalloc, stmmac VLA, rpmb, cpufreq, ged_dvfs, gpufreq, drm, 30+ thermal tscpu/tspmic, mdpm, blocktag, etc.) + Samsung PM (`Kconfig` SEC_PM, `Makefile`, `sec_wakeup_cpu_allocator.c` power.h), UFS (`ufs-sec-feature.c`), wlan `sha256/sha512-internal.c` (gen4m/s1), `disable_module_sig.config`, and `kernel/.../mali_malisw.h` kernel copy
+- `0000` — consolidated single-file version of all 84 files (auto-skipped when splits exist — see `build_kernel.sh:apply_compat_patches`)
 
 ## Updating
 When you bump `kernel-6.6`, test build. If it fails, fix the file, then:
 ```bash
-git diff -- kernel-6.6/ vendor/ > patch/compat-kernel-6.6/0010-new-fix.patch
-git add patch/compat-kernel-6.6/0010-new-fix.patch
+git diff 8c2413e78..HEAD -- kernel-6.6/ kernel/ vendor/ > patch/compat-kernel-6.6/0011-my-new-fix.patch
+git add patch/compat-kernel-6.6/0011-my-new-fix.patch
+# Or regenerate the consolidated 0000:
+git diff 8c2413e78..HEAD -- kernel-6.6/ kernel/ vendor/ > patch/compat-kernel-6.6/0000-all-kernel-compat.patch
 ```
+
+Current set was generated from `8c2413e78..c16b631e4` — 84 files, 75KB (see `0000`), no file left.

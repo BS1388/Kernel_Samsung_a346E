@@ -5,17 +5,18 @@ This directory contains patches for the Samsung A346E kernel build.
 ## Structure
 
 - `compat-kernel-6.6/` — **Auto-applied** compatibility patches for kernel-6.6 vs device modules / vendor.
-  These fix build errors when using a newer kernel (6.6) with older device modules:
+  These fix build errors when using a newer kernel (6.6) with older device modules (84 files, 75KB):
   - `0001-modules-check-dedup-sec_thermistor.patch` — Fixes duplicate `sec_thermistor.ko` same-path conflict in `modules.order`
   - `0002-loop_h-restore-for-zram.patch` — Restores `include/linux/loop.h` removed in 6.6 but needed by `zram_ext.c`
   - `0003-stp_uart-MAX-MIN-guard.patch` — Guards `MAX`/`MIN` redefinition in `stp_uart.c`
   - `0004-btmtk_define-MAX-MIN-guard-linux_v2.patch` — Guards `MAX`/`MIN` in `btmtk_define.h` (linux_v2)
   - `0005-btmtk_define-MAX-MIN-guard-mt66xx.patch` — Guards `MAX`/`MIN` in `btmtk_define.h` (mt66xx)
-  - `0006-mali_malisw-MAX-MIN-guard.patch` — Guards `MAX`/`MIN` in `mali_malisw.h`
+  - `0006-mali_malisw-MAX-MIN-guard.patch` — Guards `MAX`/`MIN` in `mali_malisw.h` (vendor)
   - `0007-mtk-mae-MAX-MIN-guard.patch` — Guards `MAX`/`MIN` in `mtk-mae-isp8.c`
   - `0008-mali_kbase_js-cred-fix.patch` — Fixes `get_current_cred_module` → `get_current_cred` in Mali driver
   - `0009-mali_csf_scheduler-cred-fix.patch` — Same cred fix for CSF scheduler
-  - `0000-all-kernel-compat.patch` — Consolidated patch with all above (alternative)
+  - `0010-remaining-device-vendor-fixes.patch` — Covers remaining 75 files (all `kernel/kernel_device_modules-6.6` MAX/MIN batch: `zsmalloc.c`, `stmmac_main.c`, `rpmb-mtk.c`, `cpufreq_limit.c`, 30+ thermal `tscpu_settings.h`, `mali_malisw.h` kernel copy, Samsung PM `Kconfig`/`Makefile`/`sec_wakeup_cpu_allocator.c`, `ufs-sec-feature.c`, `sha256/sha512-internal.c` wlan, `disable_module_sig.config` etc.)
+  - `0000-all-kernel-compat.patch` — **Consolidated** patch with all 84 files above (alternative single-file apply; auto-skipped when split patches exist)
 
   **These are applied automatically** by `build_kernel.sh:apply_compat_patches()` on every build,
   even without `custom_patches=true`. When you update `kernel-6.6` to a newer version,
@@ -43,5 +44,7 @@ during `apply_compat_fixes` before building. If a patch is already applied, it i
 ## Generating new compat patches
 After fixing a new build error, generate a patch:
 ```bash
-git diff 8c2413e78..HEAD -- kernel-6.6/ vendor/ > patch/compat-kernel-6.6/0010-my-fix.patch
+git diff 8c2413e78..HEAD -- kernel-6.6/ kernel/ vendor/ > patch/compat-kernel-6.6/0011-my-fix.patch
+# And refresh the consolidated file:
+git diff 8c2413e78..HEAD -- kernel-6.6/ kernel/ vendor/ > patch/compat-kernel-6.6/0000-all-kernel-compat.patch
 ```
