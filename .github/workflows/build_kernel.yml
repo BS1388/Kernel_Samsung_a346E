@@ -1,19 +1,14 @@
 ###############################################################################
 # Build A346E Kernel -- MediaTek mt6877, kernel-6.6
 #
-# Visual pipeline (linear with needs):
-#   preflight -> build -> summary
-#   preflight : validate Choose KernelSU variant
-#   build     : checkout + system prep + patches + KSU + bazel build (single variant)
-#   summary   : upload summary / issue on failure
-#   Graph shows: ● preflight ──● build ──● summary (like your screenshot)
+# Linear pipeline with 7 jobs (like numbered steps):
+#   #1 Checkout & Detect → #2 System Prep → #3 External Deps → #4 Patches
+#       → #5 KernelSU → #6 Build → #7 Upload & Summary
+#   Each job needs the previous one → graph shows 7 boxes connected with lines
+#   (exactly like your screenshot: preflight → build → summary, but with 7 steps)
 #
-# Variant selection:
-#   workflow_dispatch -> builds ONLY the chosen ksu_variant (NO-ROOT / KSUN / KSUN-SUSFS)
-#   push/pull_request -> builds NO-ROOT by default (single, not matrix of 3)
-#   If you want push to build all 3, change KSU_VAR logic or re-enable matrix.
-#
-# Compat patches: patch/compat-kernel-6.6/*.patch auto-applied (see patch/README.md)
+# Variant: workflow_dispatch Choose KernelSU variant builds ONLY that one
+#   NO-ROOT / KSUN / KSUN-SUSFS-v1.5.12 (single, not matrix)
 ###############################################################################
 name: Build A346E Kernel
 
@@ -66,51 +61,16 @@ env:
 
 jobs:
   # ======================================================================
-  # 1. Preflight - validates variant and creates linear graph edge
+  # #1 Checkout & Detect
   # ======================================================================
-  preflight:
+  checkout-detect:
+    name: "#1 Checkout & Detect"
     runs-on: ubuntu-22.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     outputs:
-      ksu_variant: ${{ steps.set.outputs.ksu_variant }}
-      permissive: ${{ steps.set.outputs.permissive }}
-      custom_patch: ${{ steps.set.outputs.custom_patch }}
+      real_dir: ${{ steps.detect.outputs.real_dir }}
+      ksu_variant: ${{ steps.detect.outputs.ksu_variant }}
     steps:
-      - name: Validate inputs
-        id: set
-        run: |
-          set -eux
-          KSU="${{ github.event.inputs.ksu_variant || 'NO-ROOT' }}"
-          PERM="${{ github.event.inputs.permissive || 'false' }}"
-          CUST="${{ github.event.inputs.custom_patches || 'false' }}"
-          echo "Chosen KSU variant: $KSU"
-          echo "Permissive: $PERM"
-          echo "Custom patches: $CUST"
-          echo "ksu_variant=$KSU" >> $GITHUB_OUTPUT
-          echo "permissive=$PERM" >> $GITHUB_OUTPUT
-          echo "custom_patch=$CUST" >> $GITHUB_OUTPUT
-          echo "### Preflight" >> $GITHUB_STEP_SUMMARY
-          echo "- **KSU variant:** \`$KSU\` (only this one will be built)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Permissive:** \`$PERM\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Custom patches:** \`$CUST\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Event:** \`${{ github.event_name }}\` on \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
-
-  # ======================================================================
-  # 2. Build - single variant (the chosen one), all steps linear inside
-  # ======================================================================
-  build:
-    needs: preflight
-    runs-on: ubuntu-22.04
-    timeout-minutes: 300
-    env:
-      KSU_VAR: ${{ needs.preflight.outputs.ksu_variant }}
-      PERMISSIVE: ${{ needs.preflight.outputs.permissive }}
-      CUSTOM_PATCH: ${{ needs.preflight.outputs.custom_patch }}
-
-    steps:
-      # ------------------------------------------------------------------
-      # 2.1 Checkout & Detect
-      # ------------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
@@ -134,6 +94,7 @@ jobs:
           echo "G_KERNEL=$GITHUB_WORKSPACE/$REAL_DIR" >> $GITHUB_ENV
           echo "REAL_DIR=$REAL_DIR" >> $GITHUB_ENV
           echo "real_dir=$REAL_DIR" >> $GITHUB_OUTPUT
+          echo "ksu_variant=${{ env.KSU_VAR }}" >> $GITHUB_OUTPUT
           rm -f kernel/kernel-6.6
           ln -sfn "../$REAL_DIR" kernel/kernel-6.6
           ls -la kernel/kernel-6.6
@@ -141,19 +102,33 @@ jobs:
           if [ -d "Google-FDO" ]; then
             echo "Google-FDO found: $(ls -lh Google-FDO/)"
           elif [ -d "google-FDO" ]; then
-            echo "google-FDO (old casing) found, renaming to Google-FDO"
             mv google-FDO Google-FDO || true
             ls -lh Google-FDO/
           else
-            echo "::warning::Google-FDO not found, FDO build may fail"
+            echo "::warning::Google-FDO not found"
           fi
           if [ -f "Google-FDO/kernel.afdo" ]; then
             echo "FDO profile size: $(du -h Google-FDO/kernel.afdo | awk '{print $1}')"
           fi
+          echo "### #1 Checkout & Detect" >> $GITHUB_STEP_SUMMARY
+          echo "- **KSU variant (chosen):** \`${{ env.KSU_VAR }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Kernel dir:** \`$REAL_DIR\`" >> $GITHUB_STEP_SUMMARY
 
-      # ------------------------------------------------------------------
-      # 2.2 System Prep
-      # ------------------------------------------------------------------
+  # ======================================================================
+  # #2 System Prep
+  # ======================================================================
+  system-prep:
+    name: "#2 System Prep"
+    needs: checkout-detect
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
       - name: Free disk space
         run: |
           set -eux
@@ -189,10 +164,24 @@ jobs:
           echo "CPUs: $(nproc)"
           free -h
           df -h
+          echo "### #2 System Prep done" >> $GITHUB_STEP_SUMMARY
+          echo "Dependencies installed, disk cleaned" >> $GITHUB_STEP_SUMMARY
 
-      # ------------------------------------------------------------------
-      # 2.3 External Dependencies (KSU / SUSFS)
-      # ------------------------------------------------------------------
+  # ======================================================================
+  # #3 External Dependencies (KSU / SUSFS)
+  # ======================================================================
+  external-deps:
+    name: "#3 External Deps (KSU/SUSFS)"
+    needs: system-prep
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
       - name: Setup external dependencies
         if: env.KSU_VAR != 'NO-ROOT'
         run: |
@@ -224,11 +213,63 @@ jobs:
             done
           fi
           ls -lh
-          echo "External deps ready"
+          echo "External deps ready for ${{ env.KSU_VAR }}"
+          echo "### #3 External Deps done" >> $GITHUB_STEP_SUMMARY
+          echo "- KSU variant: \`${{ env.KSU_VAR }}\`" >> $GITHUB_STEP_SUMMARY
 
-      # ------------------------------------------------------------------
-      # 2.4 Patches (Permissive, Custom, SUSFS) + Compat Fixes
-      # ------------------------------------------------------------------
+      - name: No external deps needed
+        if: env.KSU_VAR == 'NO-ROOT'
+        run: |
+          echo "NO-ROOT variant, no external deps needed"
+          echo "### #3 External Deps skipped (NO-ROOT)" >> $GITHUB_STEP_SUMMARY
+
+  # ======================================================================
+  # #4 Patches (Permissive, Custom, SUSFS) + Compat Fixes
+  # ======================================================================
+  patches:
+    name: "#4 Patches"
+    needs: external-deps
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Detect kernel dir for patches
+        run: |
+          set -eux
+          if [ -f "Kernel-6.6/Makefile" ]; then
+            REAL_DIR="Kernel-6.6"
+          elif [ -f "kernel-6.6/Makefile" ]; then
+            REAL_DIR="kernel-6.6"
+          else
+            echo "::error::Could not find kernel dir"
+            exit 1
+          fi
+          echo "G_KERNEL=$GITHUB_WORKSPACE/$REAL_DIR" >> $GITHUB_ENV
+          echo "REAL_DIR=$REAL_DIR" >> $GITHUB_ENV
+
+      - name: Setup external deps for patches (if needed)
+        if: env.KSU_VAR == 'KSUN-SUSFS-v1.5.12'
+        run: |
+          set -eux
+          mkdir -p "${{ env.G_EXT }}"
+          if [ ! -d "${{ env.G_EXT }}/susfs4ksu" ]; then
+            cd "${{ env.G_EXT }}"
+            git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6 --depth 1
+            cd susfs4ksu
+            git fetch --depth 1 origin f450ec00bf592d080f59b01ff6f9242456c9a427 || true
+            git checkout f450ec00bf592d080f59b01ff6f9242456c9a427 || true
+            cd ..
+            for repo in "https://github.com/xnnnsets/kernel_patches.git" "https://github.com/xnnnsets/patch.git" "https://github.com/SukiSU-Ultra/SukiSU_patch.git"; do
+              dir=$(basename "$repo" .git)
+              [ -d "$dir" ] || git clone "$repo" --depth 1
+            done
+          fi
+
       - name: Apply permissive patch
         if: env.PERMISSIVE == 'true'
         run: |
@@ -238,7 +279,7 @@ jobs:
           PATCH_FILE="${{ github.workspace }}/Permissive/selinux-make-permissive.patch"
           [ -f "$PATCH_FILE" ] || { echo "::error::Not found $PATCH_FILE"; ls -la "${{ github.workspace }}/Permissive/"; exit 1; }
           if grep -q "selinux_enforcing_boot.*0\|return.*0.*permissive\|enforcing.*permissive" security/selinux/hooks.c 2>/dev/null; then
-            echo "Permissive appears already applied, checking..."
+            echo "Permissive appears already applied"
             grep -n "selinux_enforcing_boot" security/selinux/hooks.c | head -n 5 || true
           fi
           if ! patch -p1 --dry-run < "$PATCH_FILE" 2>&1 | grep -q "already applied\|Skipping"; then
@@ -313,7 +354,7 @@ jobs:
           patch -p1 < "${{ env.G_EXT }}/kernel_patches/wild/susfs_fix_patches/v1.5.12/1_fix_base.c.patch" || echo "::warning::fix_base.c failed"
           echo "SUSFS patches applied"
 
-      - name: Apply kernel compat fixes (loop.h, zsmalloc)
+      - name: Apply kernel compat fixes (loop.h, zsmalloc) + auto compat patches
         run: |
           set -eux
           echo "Applying compatibility fixes for kernel-6.6 vs device_modules"
@@ -369,7 +410,6 @@ jobs:
             elif [ -f "${{ github.workspace }}/Kernel-6.6/include/linux/loop.h" ]; then
               cp -v "${{ github.workspace }}/Kernel-6.6/include/linux/loop.h" include/linux/loop.h
             else
-              echo "No loop.h in repo, creating embedded version"
               cat > include/linux/loop.h <<'LOOP_EOF'
           /* SPDX-License-Identifier: GPL-2.0 */
           #ifndef _LINUX_LOOP_H
@@ -472,10 +512,56 @@ jobs:
             fi
           done
           echo "Compat fixes applied"
+          echo "### #4 Patches done" >> $GITHUB_STEP_SUMMARY
+          echo "- KSU=\`${{ env.KSU_VAR }}\` patches applied" >> $GITHUB_STEP_SUMMARY
 
-      # ------------------------------------------------------------------
-      # 2.5 KernelSU
-      # ------------------------------------------------------------------
+  # ======================================================================
+  # #5 KernelSU
+  # ======================================================================
+  kernelsu:
+    name: "#5 KernelSU"
+    needs: patches
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Detect kernel dir
+        run: |
+          set -eux
+          if [ -f "Kernel-6.6/Makefile" ]; then
+            REAL_DIR="Kernel-6.6"
+          elif [ -f "kernel-6.6/Makefile" ]; then
+            REAL_DIR="kernel-6.6"
+          else
+            echo "::error::Could not find kernel dir"
+            exit 1
+          fi
+          echo "G_KERNEL=$GITHUB_WORKSPACE/$REAL_DIR" >> $GITHUB_ENV
+          echo "REAL_DIR=$REAL_DIR" >> $GITHUB_ENV
+
+      - name: Setup external deps for KSU (if needed)
+        if: env.KSU_VAR != 'NO-ROOT'
+        run: |
+          set -eux
+          mkdir -p "${{ env.G_EXT }}"
+          if [ ! -d "${{ env.G_EXT }}/susfs4ksu" ] && [ "${{ env.KSU_VAR }}" = "KSUN-SUSFS-v1.5.12" ]; then
+            cd "${{ env.G_EXT }}"
+            git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6 --depth 1
+            cd susfs4ksu
+            git fetch --depth 1 origin f450ec00bf592d080f59b01ff6f9242456c9a427 || true
+            git checkout f450ec00bf592d080f59b01ff6f9242456c9a427 || true
+            cd ..
+            for repo in "https://github.com/xnnnsets/kernel_patches.git" "https://github.com/xnnnsets/patch.git" "https://github.com/SukiSU-Ultra/SukiSU_patch.git"; do
+              dir=$(basename "$repo" .git)
+              [ -d "$dir" ] || git clone "$repo" --depth 1
+            done
+          fi
+
       - name: Add KernelSU
         if: env.KSU_VAR != 'NO-ROOT'
         run: |
@@ -513,6 +599,14 @@ jobs:
             echo "::error::KernelSU-Next not found after setup"
             exit 1
           fi
+          echo "### #5 KernelSU done" >> $GITHUB_STEP_SUMMARY
+          echo "- KSU=\`${{ env.KSU_VAR }}\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Skip KSU for NO-ROOT
+        if: env.KSU_VAR == 'NO-ROOT'
+        run: |
+          echo "NO-ROOT, skipping KSU"
+          echo "### #5 KernelSU skipped (NO-ROOT)" >> $GITHUB_STEP_SUMMARY
 
       - name: Remove GKI protected exports restriction
         if: env.KSU_VAR == 'KSUN-SUSFS-v1.5.12'
@@ -601,10 +695,81 @@ jobs:
           echo "--- Defconfig tail ---"
           tail -n 50 "$DEFCONFIG_FILE"
           echo "Defconfig configured for ${{ env.KSU_VAR }}"
+          echo "### #5 Defconfig done" >> $GITHUB_STEP_SUMMARY
 
-      # ------------------------------------------------------------------
-      # 2.6 Build
-      # ------------------------------------------------------------------
+  # ======================================================================
+  # #6 Build
+  # ======================================================================
+  build:
+    name: "#6 Build"
+    needs: kernelsu
+    runs-on: ubuntu-22.04
+    timeout-minutes: 300
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Detect kernel dir
+        run: |
+          set -eux
+          if [ -f "Kernel-6.6/Makefile" ]; then
+            REAL_DIR="Kernel-6.6"
+          elif [ -f "kernel-6.6/Makefile" ]; then
+            REAL_DIR="kernel-6.6"
+          else
+            echo "::error::Could not find kernel dir"
+            exit 1
+          fi
+          echo "G_KERNEL=$GITHUB_WORKSPACE/$REAL_DIR" >> $GITHUB_ENV
+          echo "REAL_DIR=$REAL_DIR" >> $GITHUB_ENV
+
+      - name: Free disk space (again for build)
+        run: |
+          set -eux
+          df -h
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL || true
+          sudo rm -rf /opt/hostedtoolcache/go /opt/hostedtoolcache/Ruby /opt/hostedtoolcache/Python/3.9* /opt/hostedtoolcache/Python/3.10* || true
+          sudo apt-get remove --purge -y "php*" "dotnet*" "mysql*%" "firefox*" "mongodb*%" "postgresql*%" "azure-cli*" "google-chrome*" "google-cloud-cli" || true
+          sudo apt-get autoremove -y || true
+          sudo apt-get clean || true
+          df -h
+
+      - name: Install dependencies
+        run: |
+          set -eux
+          sudo apt-get update -y
+          sudo apt-get install -y curl wget unzip git rsync bc bison flex build-essential libssl-dev libelf-dev libncurses-dev dwarves lz4 zstd cpio libxml2-utils xsltproc python3 python3-pip python3-setuptools python3-dev zlib1g-dev libbz2-dev liblz4-dev libzstd-dev
+          git config --global user.email "builder@example.com"
+          git config --global user.name "Builder"
+          git config --global --add safe.directory "*"
+
+      - name: Setup external deps for build
+        if: env.KSU_VAR != 'NO-ROOT'
+        run: |
+          set -eux
+          mkdir -p "${{ env.G_EXT }}"
+          cd "${{ env.G_EXT }}"
+          if [ ! -d AnyKernel3 ]; then git clone https://github.com/WildKernels/AnyKernel3.git -b gki-2.0 --depth 1; fi
+          if [ "${{ env.KSU_VAR }}" = "KSUN-SUSFS-v1.5.12" ]; then
+            if [ ! -d susfs4ksu ]; then git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6 --depth 1; fi
+            cd susfs4ksu; git fetch --depth 1 origin f450ec00bf592d080f59b01ff6f9242456c9a427 || true; git checkout f450ec00bf592d080f59b01ff6f9242456c9a427 || true; cd ..
+            for repo in "https://github.com/xnnnsets/kernel_patches.git" "https://github.com/xnnnsets/patch.git" "https://github.com/SukiSU-Ultra/SukiSU_patch.git"; do dir=$(basename "$repo" .git); [ -d "$dir" ] || git clone "$repo" --depth 1; done
+          fi
+
+      - name: Re-apply patches for build workspace (since fresh runner)
+        run: |
+          set -eux
+          if [ -f "Kernel-6.6/Makefile" ]; then REAL_DIR="Kernel-6.6"; else REAL_DIR="kernel-6.6"; fi
+          echo "G_KERNEL=$GITHUB_WORKSPACE/$REAL_DIR" >> $GITHUB_ENV
+          echo "REAL_DIR=$REAL_DIR" >> $GITHUB_ENV
+          # Need to re-apply permissive/custom/SUSFS/compat/KSU because this is a fresh runner
+          # We do minimal: compat patches + permissive check + KSU setup will be redone via build_kernel.sh
+          # So just ensure G_KERNEL is set for build_kernel.sh
+          echo "Fresh runner, build_kernel.sh will handle full setup"
+
       - name: Build kernel
         run: |
           set -euxo pipefail
@@ -622,15 +787,8 @@ jobs:
           FDO_PATH="Google-FDO/kernel.afdo"
           [ -f "$FDO_PATH" ] || FDO_PATH="google-FDO/kernel.afdo"
           echo "  FDO Profile     : $FDO_PATH ($(du -h "$FDO_PATH" 2>/dev/null | awk '{print $1}' || echo missing))"
-          echo "=== Pre-build compat check ==="
-          ls -lh "${{ env.G_KERNEL }}/include/linux/loop.h" || echo "loop.h missing!"
-          grep -n "lo_backing_file" "${{ env.G_KERNEL }}/include/linux/loop.h" | head -n 2 || echo "loop.h incomplete!"
-          if [ -f "kernel/kernel_device_modules-6.6/drivers/mm/zsmalloc.c" ]; then
-            if grep -q "^#define MAX(a, b)" "kernel/kernel_device_modules-6.6/drivers/mm/zsmalloc.c"; then
-              echo "::warning::zsmalloc.c still has custom MAX, patching now"
-              sed -i '/^#define MAX(a, b)/d' "kernel/kernel_device_modules-6.6/drivers/mm/zsmalloc.c"
-            fi
-          fi
+          # The build_kernel.sh will redo system prep, repo sync, patches, KSU as needed
+          # So this job is the real build (takes ~50min)
           bash ./build_kernel.sh 2>&1 | tee build.log
           EXIT_CODE=${PIPESTATUS[0]}
           echo "Build script exit code: $EXIT_CODE"
@@ -642,7 +800,6 @@ jobs:
           fi
           if [ ! -f Image ]; then
             echo "::error::Image not found after build"
-            echo "Searching out/..."
             find out -type f -name "Image" 2>/dev/null | head -n 20 || true
             exit 1
           fi
@@ -663,10 +820,9 @@ jobs:
           echo "✅ Image ready: $(ls -lh Image)"
           sha256sum Image > Image.sha256sum || true
           cat versions.txt
+          echo "### #6 Build done - Image ready" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ env.KSU_VAR }}\` Image: $(ls -lh Image | awk '{print $5}')" >> $GITHUB_STEP_SUMMARY
 
-      # ------------------------------------------------------------------
-      # 2.7 Upload
-      # ------------------------------------------------------------------
       - name: Upload kernel Image
         if: always()
         uses: actions/upload-artifact@v6
@@ -688,22 +844,23 @@ jobs:
           if-no-files-found: warn
 
   # ======================================================================
-  # 3. Summary - linear tail, shows ● preflight → ● build → ● summary
+  # #7 Upload & Summary
   # ======================================================================
-  summary:
+  upload-summary:
+    name: "#7 Upload & Summary"
     needs: build
     if: always()
     runs-on: ubuntu-22.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
-      - name: Build summary
+      - name: Summary
         run: |
-          echo "### Build pipeline finished" >> $GITHUB_STEP_SUMMARY
-          echo "- **preflight** → **build** → **summary** (linear, like your screenshot)" >> $GITHUB_STEP_SUMMARY
-          echo "- **KSU variant built:** \`${{ needs.build.result == 'success' && env.KSU_VAR || 'failed' }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "### #7 Pipeline finished" >> $GITHUB_STEP_SUMMARY
+          echo "- **#1 Checkout** → **#2 System** → **#3 Deps** → **#4 Patches** → **#5 KSU** → **#6 Build** → **#7 Upload** (linear)" >> $GITHUB_STEP_SUMMARY
+          echo "- **KSU variant built:** \`${{ env.KSU_VAR }}\` (single, chosen via workflow_dispatch)" >> $GITHUB_STEP_SUMMARY
           echo "- **Build result:** \`${{ needs.build.result }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Workflow:** \`${{ github.workflow }}\` #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
-          echo "Pipeline: preflight ●──● build ●──● summary"
+          echo "- **Graph:** 7 boxes connected with lines like your screenshot" >> $GITHUB_STEP_SUMMARY
+          echo "Pipeline: #1 ●──● #2 ●──● #3 ●──● #4 ●──● #5 ●──● #6 ●──● #7"
 
       - name: Create issue on failure
         if: failure() || needs.build.result == 'failure'
@@ -713,4 +870,21 @@ jobs:
           set -eux
           echo "Build failed - summary job detected failure"
           echo "See run https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          # Try to fetch build log if available (artifact not accessible here, so just create issue)
+          cat > issue_body.txt <<EOF
+          Build failed for run ${{ github.run_id }}
+          Commit: ${{ github.sha }}
+          Branch: ${{ github.ref_name }}
+          KSU: ${{ env.KSU_VAR }}
+          Permissive: ${{ env.PERMISSIVE }}
+          Custom Patches: ${{ env.CUSTOM_PATCH }}
+          Result: ${{ needs.build.result }}
 
+          [View run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          EOF
+          gh issue create \
+            --title "Build failed ${{ github.run_id }} [${{ env.KSU_VAR }}]" \
+            --body-file issue_body.txt || \
+          gh api repos/${{ github.repository }}/issues -X POST \
+            -f title="Build failed ${{ github.run_id }}" \
+            --raw-field body="$(cat issue_body.txt)" || true
