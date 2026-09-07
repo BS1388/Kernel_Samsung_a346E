@@ -10,6 +10,7 @@
 #   3. sync_aosp_kernel       -- sync common-android15-6.6
 #   4. link_prebuilts         -- prebuilts & external tools
 #   5. prepare_workspace      -- fix bazel sandbox (rsync, FDO, sig)
+#      5c. stamp_ksu_version    -- embed real KernelSU-Next version (not v0.0.1)
 #      5a. apply_compat_patches  -- auto-apply patch/compat-kernel-6.6/*.patch
 #      5b. apply_compat_fixes    -- inline sed/header fixes (loop.h, MAX/MIN...)
 #   6. patch_stamp            -- stamp.bzl & shebang fixes
@@ -616,6 +617,74 @@ KCEOF
 }
 
 # ------------------------------------------------------------------------------
+# 5c. KernelSU-Next version stamp (fix manager showing "v0.0.1" / version "1")
+#     prepare_workspace()'s rsync --copy-links dereferences the
+#     drivers/kernelsu -> ../KernelSU-Next/kernel symlink into a plain copy
+#     inside the outer repo, so at compile time KernelSU-Next/kernel/Kbuild
+#     cannot detect its own git repo and falls back to:
+#       KSU_VERSION_FALLBACK     := 1       (manager shows version "1")
+#       KSU_VERSION_TAG_FALLBACK := v0.0.1 (manager shows tag "v0.0.1")
+#     Fix: write the real values (30000 + commit count, latest tag) into the
+#     fallback lines of the Kbuild copy that actually gets compiled.
+# ------------------------------------------------------------------------------
+stamp_ksu_version() {
+  local ws_kbuild="kernel/kernel-6.6/drivers/kernelsu/Kbuild"
+  if [ ! -f "$ws_kbuild" ]; then
+    log "No kernelsu Kbuild in workspace (NO-ROOT build?) - skipping KSU version stamp"
+    return 0
+  fi
+  if ! grep -q "KSU_VERSION_FALLBACK" "$ws_kbuild"; then
+    log "kernelsu Kbuild has no KSU_VERSION_FALLBACK (older KSU layout) - skipping stamp"
+    return 0
+  fi
+
+  local code="" tag="" src_ksu="" d count
+  for d in "${ROOT_DIR}/kernel-6.6/KernelSU-Next" \
+           "${ROOT_DIR}/Kernel-6.6/KernelSU-Next" \
+           "${ROOT_DIR}/aosp-kernel/common/KernelSU-Next"; do
+    if [ -d "$d/.git" ]; then
+      src_ksu="$d"
+      break
+    fi
+  done
+
+  if [ -n "$src_ksu" ]; then
+    log "Reading KernelSU-Next version from $src_ksu"
+    count=$(git -C "$src_ksu" rev-list --count HEAD 2>/dev/null || echo 0)
+    code=$((30000 + count))
+    tag=$(git -C "$src_ksu" describe --tags --abbrev=0 2>/dev/null || echo "dev")
+  elif [ -n "${KSU_VERSION:-}" ] && [ -n "${KSU_GIT_TAG:-}" ]; then
+    log "Using KSU version from environment: ${KSU_GIT_TAG} (${KSU_VERSION})"
+    code="${KSU_VERSION}"
+    tag="${KSU_GIT_TAG}"
+  fi
+
+  if [ -z "$code" ] || [ -z "$tag" ]; then
+    warn "Could not determine KernelSU-Next version (no git repo / env) - manager may show v0.0.1 (1)"
+    return 0
+  fi
+
+  local cur_code cur_tag
+  cur_code=$(grep -E '^KSU_VERSION_FALLBACK :=' "$ws_kbuild" | awk '{print $3}' || true)
+  cur_tag=$(grep -E '^KSU_VERSION_TAG_FALLBACK :=' "$ws_kbuild" | awk '{print $3}' || true)
+
+  if [ "$code" = "$cur_code" ] && [ "$tag" = "$cur_tag" ]; then
+    ok "KSU version already stamped in workspace: ${tag} (${code})"
+    return 0
+  fi
+
+  log "Stamping KernelSU-Next version ${tag} (${code}) into $ws_kbuild (was: ${cur_tag:-?} (${cur_code:-?}))"
+  if [ -n "$code" ]; then
+    sed -i "s|^KSU_VERSION_FALLBACK := .*|KSU_VERSION_FALLBACK := ${code}|" "$ws_kbuild"
+  fi
+  if [ -n "$tag" ]; then
+    sed -i "s|^KSU_VERSION_TAG_FALLBACK := .*|KSU_VERSION_TAG_FALLBACK := ${tag}|" "$ws_kbuild"
+  fi
+  grep -n "KSU_VERSION_FALLBACK\|KSU_VERSION_TAG_FALLBACK" "$ws_kbuild" || true
+  ok "KernelSU-Next version stamped: ${tag} (${code})"
+}
+
+# ------------------------------------------------------------------------------
 # 5. Prepare kernel/ workspace (fix bazel sandbox symlink issues)
 # ------------------------------------------------------------------------------
 prepare_workspace() {
@@ -660,6 +729,9 @@ prepare_workspace() {
       fi
     fi
   fi
+
+  # --- KernelSU-Next: stamp real version into the compiled Kbuild (fix v0.0.1 (1)) ---
+  stamp_ksu_version
 
   # --- build/bazel_common_rules: same issue ---
   if [ -L "build/bazel_common_rules" ] || [ ! -d "build/bazel_common_rules" ]; then

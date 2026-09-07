@@ -24,6 +24,14 @@ on:
           - KSUN
           - KSUN-SUSFS-v1.5.12
         default: NO-ROOT
+      ksun_ref:
+        description: "KSUN source ref (KSUN variant only). dev = newest code, latest-tag = last release"
+        required: false
+        type: choice
+        options:
+          - "dev (latest)"
+          - "latest-tag"
+        default: "dev (latest)"
       permissive:
         description: "Make SELinux permissive?"
         type: boolean
@@ -56,6 +64,7 @@ env:
   G_WORKSPACE: ${{ github.workspace }}
   G_EXT: ${{ github.workspace }}/external_deps
   KSU_VAR: ${{ github.event.inputs.ksu_variant || 'NO-ROOT' }}
+  KSUN_REF: ${{ github.event.inputs.ksun_ref || 'dev (latest)' }}
   PERMISSIVE: ${{ github.event.inputs.permissive || 'false' }}
   CUSTOM_PATCH: ${{ github.event.inputs.custom_patches || 'false' }}
 
@@ -112,6 +121,7 @@ jobs:
           fi
           echo "### #1 Checkout & Detect" >> $GITHUB_STEP_SUMMARY
           echo "- **KSU variant (chosen):** \`${{ env.KSU_VAR }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **KSUN ref:** \`${{ env.KSUN_REF }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Kernel dir:** \`$REAL_DIR\`" >> $GITHUB_STEP_SUMMARY
 
   # ======================================================================
@@ -570,8 +580,15 @@ jobs:
           rm -rf KernelSU-Next || true
           case "${{ env.KSU_VAR }}" in
             "KSUN")
-              echo "Adding KernelSU-Next (dev branch)"
-              curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/refs/heads/dev/kernel/setup.sh" | bash -
+              echo "Adding KernelSU-Next (ref: ${{ env.KSUN_REF }})"
+              curl -LSs --retry 3 "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/refs/heads/dev/kernel/setup.sh" -o /tmp/ksun_setup.sh
+              if [ "${{ env.KSUN_REF }}" = "latest-tag" ]; then
+                echo "Using latest release tag (no arg -> setup.sh checks out latest tag)"
+                sh /tmp/ksun_setup.sh
+              else
+                echo "Using dev branch HEAD (the very latest KernelSU-Next)"
+                sh /tmp/ksun_setup.sh dev
+              fi
               ;;
             "KSUN-SUSFS-v1.5.12")
               echo "Adding KernelSU-Next (next-1) for SUSFS"
@@ -591,16 +608,29 @@ jobs:
           esac
           if [ -d "./KernelSU-Next" ]; then
             cd "./KernelSU-Next"
-            echo "KSU_GIT_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.9.5")" >> $GITHUB_ENV
+            KSU_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "dev")
+            KSU_CODE=$((30000 + $(git rev-list --count HEAD 2>/dev/null || echo "0")))
+            echo "KSU_GIT_TAG=${KSU_TAG}" >> $GITHUB_ENV
             echo "KSU_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")" >> $GITHUB_ENV
-            echo "KSU_VERSION=$((30000 + $(git rev-list --count HEAD 2>/dev/null || echo "0")))" >> $GITHUB_ENV
-            echo "KSU added: $(pwd) tag=$(cat $GITHUB_ENV | grep KSU_GIT_TAG | tail -n1)"
+            echo "KSU_VERSION=${KSU_CODE}" >> $GITHUB_ENV
+            # FIX "v0.0.1 (1)" in the manager: build_kernel.sh prepare_workspace()
+            # dereferences the drivers/kernelsu symlink into a plain copy inside the
+            # outer repo, so at compile time KernelSU-Next/kernel/Kbuild cannot detect
+            # its own git repo and falls back to KSU_VERSION=1 / KSU_VERSION_TAG=v0.0.1.
+            # Stamp the real values into the fallback lines of the Kbuild that gets compiled.
+            if [ -f kernel/Kbuild ] && grep -q "KSU_VERSION_FALLBACK" kernel/Kbuild; then
+              sed -i "s|^KSU_VERSION_FALLBACK := .*|KSU_VERSION_FALLBACK := ${KSU_CODE}|" kernel/Kbuild
+              sed -i "s|^KSU_VERSION_TAG_FALLBACK := .*|KSU_VERSION_TAG_FALLBACK := ${KSU_TAG}|" kernel/Kbuild
+              echo "KernelSU-Next version stamped into kernel/Kbuild: ${KSU_TAG} (${KSU_CODE})"
+              grep -n "KSU_VERSION_FALLBACK\|KSU_VERSION_TAG_FALLBACK" kernel/Kbuild || true
+            fi
+            echo "KSU added: $(pwd) tag=${KSU_TAG} version=${KSU_CODE}"
           else
             echo "::error::KernelSU-Next not found after setup"
             exit 1
           fi
           echo "### #5 KernelSU done" >> $GITHUB_STEP_SUMMARY
-          echo "- KSU=\`${{ env.KSU_VAR }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- KSU=\`${{ env.KSU_VAR }}\` -> \`${KSU_TAG:-unknown}\` (\`${KSU_CODE:-unknown}\`)" >> $GITHUB_STEP_SUMMARY
 
       - name: Skip KSU for NO-ROOT
         if: env.KSU_VAR == 'NO-ROOT'
@@ -785,8 +815,15 @@ jobs:
           rm -rf KernelSU-Next || true
           case "${{ env.KSU_VAR }}" in
             "KSUN")
-              echo "Adding KernelSU-Next (dev branch) for build job"
-              curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/refs/heads/dev/kernel/setup.sh" | bash -
+              echo "Adding KernelSU-Next (ref: ${{ env.KSUN_REF }}) for build job"
+              curl -LSs --retry 3 "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/refs/heads/dev/kernel/setup.sh" -o /tmp/ksun_setup.sh
+              if [ "${{ env.KSUN_REF }}" = "latest-tag" ]; then
+                echo "Using latest release tag (no arg -> setup.sh checks out latest tag)"
+                sh /tmp/ksun_setup.sh
+              else
+                echo "Using dev branch HEAD (the very latest KernelSU-Next)"
+                sh /tmp/ksun_setup.sh dev
+              fi
               ;;
             "KSUN-SUSFS-v1.5.12")
               echo "Adding KernelSU-Next (next-1) for SUSFS in build job"
@@ -802,10 +839,21 @@ jobs:
           esac
           if [ -d "./KernelSU-Next" ]; then
             cd "./KernelSU-Next"
-            echo "KSU_GIT_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.9.5")" >> $GITHUB_ENV
+            KSU_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "dev")
+            KSU_CODE=$((30000 + $(git rev-list --count HEAD 2>/dev/null || echo "0")))
+            echo "KSU_GIT_TAG=${KSU_TAG}" >> $GITHUB_ENV
             echo "KSU_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")" >> $GITHUB_ENV
-            echo "KSU_VERSION=$((30000 + $(git rev-list --count HEAD 2>/dev/null || echo "0")))" >> $GITHUB_ENV
-            echo "KSU re-applied in build job: $(pwd) tag=$(grep KSU_GIT_TAG $GITHUB_ENV | tail -n1)"
+            echo "KSU_VERSION=${KSU_CODE}" >> $GITHUB_ENV
+            # FIX "v0.0.1 (1)" in the manager (same as job #5): this Kbuild copy is the
+            # one that rsync lands in the bazel workspace, where git detection inside
+            # KernelSU-Next/kernel/Kbuild fails and falls back to v0.0.1 / version 1.
+            if [ -f kernel/Kbuild ] && grep -q "KSU_VERSION_FALLBACK" kernel/Kbuild; then
+              sed -i "s|^KSU_VERSION_FALLBACK := .*|KSU_VERSION_FALLBACK := ${KSU_CODE}|" kernel/Kbuild
+              sed -i "s|^KSU_VERSION_TAG_FALLBACK := .*|KSU_VERSION_TAG_FALLBACK := ${KSU_TAG}|" kernel/Kbuild
+              echo "KernelSU-Next version stamped into kernel/Kbuild (build job): ${KSU_TAG} (${KSU_CODE})"
+              grep -n "KSU_VERSION_FALLBACK\|KSU_VERSION_TAG_FALLBACK" kernel/Kbuild || true
+            fi
+            echo "KSU re-applied in build job: $(pwd) tag=${KSU_TAG} version=${KSU_CODE}"
           else
             echo "::error::KernelSU-Next not found after setup in build job"
             exit 1
@@ -931,6 +979,7 @@ jobs:
           {
             echo "Based on $SEC_VER Samsung Open Source"
             echo "KSU Variant: ${{ env.KSU_VAR }}"
+            echo "KernelSU-Next: ${KSU_GIT_TAG:-unknown} (${KSU_VERSION:-unknown}) @ ${KSU_COMMIT:-unknown}"
             echo "Permissive: ${{ env.PERMISSIVE }}"
             echo "Custom Patches: ${{ env.CUSTOM_PATCH }}"
             echo "SHA: ${{ github.sha }}"
