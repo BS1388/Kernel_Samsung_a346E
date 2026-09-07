@@ -998,7 +998,15 @@ jobs:
             COUNT=$((COUNT+1))
           done < <(find "$DIST" -type f \( -name "*.ko" -o -name "modules.dep*" -o -name "modules.load*" -o -name "modules.order" -o -name "modules.alias" -o -name "modules.softdep" \) 2>/dev/null)
           echo "Collected $COUNT module files"
-          find "$MODDIR" -name "*.ko" | sed 's/.*\///' | grep -iE "wlan|wmt|conn|bt|cfg80211|mac80211|gps|fm" || echo "(no connectivity modules found!)"
+          # GKI (system_dlkm) modules live in the AOSP kernel output, not in the
+          # device-modules dist. bt_drv_6877.ko needs bluetooth.ko from here.
+          mkdir -p "$MODDIR/gki"
+          for name in bluetooth.ko rfcomm.ko hidp.ko rfkill.ko; do
+            f=$(find out aosp-kernel bazel-bin -type f -name "$name" 2>/dev/null | head -n 1 || true)
+            if [ -n "${f:-}" ]; then cp "$f" "$MODDIR/gki/"; echo "gki: $f"; fi
+          done
+          rmdir "$MODDIR/gki" 2>/dev/null || true
+          find "$MODDIR" -name "*.ko" | sed 's/.*\///' | grep -iE "wlan|wmt|conn|bt|cfg80211|mac80211|gps|fm|bluetooth" || echo "(no connectivity modules found!)"
           tar -cJf kernel-modules.tar.xz "$MODDIR"
           ls -lh kernel-modules.tar.xz
           echo "- Modules artifact: $COUNT files ($(du -h kernel-modules.tar.xz | awk '{print $1}'))" >> $GITHUB_STEP_SUMMARY
