@@ -1,7 +1,28 @@
 #!/bin/bash
 # ==============================================================================
 # Build script for Samsung A346E kernel (MediaTek mt6877, kernel-6.6)
-# Refactored & hardened - handles bazel sandbox, casing, FDO, and compat fixes
+# Refactored & hardened -- handles bazel sandbox, casing, FDO, and compat fixes
+#
+# Sections:
+#   0. Globals & helpers
+#   1. setup_system           -- host deps & git config
+#   2. download_repo_tool     -- fetch `repo`
+#   3. sync_aosp_kernel       -- sync common-android15-6.6
+#   4. link_prebuilts         -- prebuilts & external tools
+#   5. prepare_workspace      -- fix bazel sandbox (rsync, FDO, sig)
+#      5a. apply_compat_patches  -- auto-apply patch/compat-kernel-6.6/*.patch
+#      5b. apply_compat_fixes    -- inline sed/header fixes (loop.h, MAX/MIN...)
+#   6. patch_stamp            -- stamp.bzl & shebang fixes
+#   7. generate_build_config  -- gen_build_config.py
+#   8. run_kernel_build       -- bazel build
+#   9. collect_image          -- gather Image
+#
+# Compat patches:
+#   Patches in patch/compat-kernel-6.6/ are auto-applied via
+#   apply_compat_patches() before the inline fixes, so a fresh kernel-6.6
+#   checkout can be fixed by just enabling the patch dir. Use:
+#     patch -p1 --forward < patch/compat-kernel-6.6/*.patch
+#   See patch/README.md and patch/compat-kernel-6.6/README.md.
 # ==============================================================================
 set -euo pipefail
 
@@ -168,10 +189,83 @@ link_prebuilts() {
 }
 
 # ------------------------------------------------------------------------------
-# 5a. Compatibility fixes (kernel-6.6 update vs device modules)
+# 5a. Auto-apply compat patches from patch/compat-kernel-6.6/
+#      These are the persistent patches for kernel-6.6 update breakage.
+#      They are also committed directly to the tree, but applying them here
+#      lets a fresh kernel-6.6 checkout be fixed automatically.
+# ------------------------------------------------------------------------------
+apply_compat_patches() {
+  log "Applying compat patches from patch/compat-kernel-6.6/ (if any)"
+
+  local compat_dirs=(
+    "${ROOT_DIR}/patch/compat-kernel-6.6"
+    "patch/compat-kernel-6.6"
+    "../patch/compat-kernel-6.6"
+  )
+  local compat_dir=""
+  for d in "${compat_dirs[@]}"; do
+    if [ -d "$d" ]; then
+      compat_dir="$d"
+      break
+    fi
+  done
+
+  if [ -z "$compat_dir" ] || [ ! -d "$compat_dir" ]; then
+    log "No compat patch dir found, skipping auto-apply"
+    return 0
+  fi
+
+  log "Using compat patch dir: $compat_dir"
+  shopt -s nullglob
+  local patches=("$compat_dir"/*.patch)
+  # Exclude the consolidated 0000-all* to avoid double-apply when split patches exist
+  # (if only 0000 exists it will still be applied)
+  local filtered=()
+  for p in "${patches[@]}"; do
+    local base
+    base="$(basename "$p")"
+    if [[ "$base" == 0000-* ]] && [ ${#patches[@]} -gt 1 ]; then
+      log "Skipping consolidated $base (split patches present)"
+      continue
+    fi
+    filtered+=("$p")
+  done
+  shopt -u nullglob
+
+  if [ ${#filtered[@]} -eq 0 ]; then
+    log "No compat patches to apply"
+    return 0
+  fi
+
+  log "Found ${#filtered[@]} compat patches:"
+  printf "  - %s\n" "${filtered[@]}"
+
+  for p in "${filtered[@]}"; do
+    log "Applying $(basename "$p")"
+    if patch -p1 --forward --batch < "$p" 2>&1 | tee /tmp/compat_patch.log; then
+      ok "Applied $(basename "$p")"
+    else
+      # patch --forward returns non-zero if already applied or fails
+      if grep -q "Skipping patch\|already applied\|Reversed (or previously applied) patch detected" /tmp/compat_patch.log 2>/dev/null; then
+        log "Skipped $(basename "$p") (already applied)"
+      else
+        warn "Compat patch $(basename "$p") may have failed - see log"
+        cat /tmp/compat_patch.log || true
+        # Don't fail build for compat patches - inline fixes below will handle it
+      fi
+    fi
+  done
+  ok "Compat patches done"
+}
+
+# ------------------------------------------------------------------------------
+# 5b. Compatibility fixes (kernel-6.6 update vs device modules)
 # ------------------------------------------------------------------------------
 apply_compat_fixes() {
   log "Applying compatibility fixes for kernel-6.6 vs device_modules-6.6"
+
+  # First try auto-applying patch files (idempotent)
+  apply_compat_patches
 
   # --- Fix 1: Restore include/linux/loop.h which was removed in new kernel ---
   # New kernel moved struct loop_device to drivers/block/loop.c (private),

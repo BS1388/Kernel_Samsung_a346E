@@ -1,3 +1,23 @@
+###############################################################################
+# Build A346E Kernel -- MediaTek mt6877, kernel-6.6
+#
+# Sections:
+#   1. Checkout & Detect      -- find kernel dir, handle casing, FDO
+#   2. System Prep            -- free disk, install deps
+#   3. External Deps          -- KSU / SUSFS ( AnyKernel3, susfs4ksu )
+#   4. Patches                -- permissive, custom, SUSFS, compat fixes
+#   5. KernelSU               -- setup.sh + defconfig
+#   6. Build                  -- build_kernel.sh
+#   7. Upload & Failure       -- artifacts + issue on failure
+#
+# Compat patches:
+#   patch/compat-kernel-6.6/*.patch are auto-applied by build_kernel.sh
+#   and also by the "Apply kernel compat fixes" step below for the
+#   kernel copy used by bazel. See patch/README.md.
+#
+# Node.js 24: checkout@v6 and upload-artifact@v6 both run on node24
+# https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+###############################################################################
 name: Build A346E Kernel
 
 on:
@@ -35,9 +55,6 @@ on:
     branches:
       - A346E
       - "arena/**"
-
-# Node.js 24 fix: checkout@v6 and upload-artifact@v6 both run on node24
-# https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
 
 permissions:
   contents: read
@@ -305,6 +322,55 @@ jobs:
         run: |
           set -eux
           echo "Applying compatibility fixes for kernel-6.6 vs device_modules"
+          # Auto-apply patch/compat-kernel-6.6/*.patch (idempotent, for fresh kernel-6.6)
+          echo "=== Auto-applying compat patches ==="
+          COMPAT_DIR="${{ github.workspace }}/patch/compat-kernel-6.6"
+          if [ -d "$COMPAT_DIR" ]; then
+            echo "Found $COMPAT_DIR"
+            ls -lh "$COMPAT_DIR"/*.patch 2>&1 | head -n 20 || true
+            # Exclude consolidated 0000-all when split patches exist
+            shopt -s nullglob
+            all_patches=("$COMPAT_DIR"/*.patch)
+            patches=()
+            for p in "${all_patches[@]}"; do
+              base=$(basename "$p")
+              if [[ "$base" == 0000-* ]] && [ ${#all_patches[@]} -gt 1 ]; then
+                echo "Skipping consolidated $base"
+                continue
+              fi
+              patches+=("$p")
+            done
+            shopt -u nullglob
+            # Apply once to G_KERNEL (the kernel copy used by bazel)
+            cd "${{ env.G_KERNEL }}"
+            for p in "${patches[@]}"; do
+              echo "Applying $(basename "$p") to G_KERNEL"
+              patch -p1 --forward --batch < "$p" 2>&1 | tee /tmp/compat.log || {
+                if grep -q "Skipping patch\|already applied\|Reversed" /tmp/compat.log; then
+                  echo "Already applied: $(basename "$p")"
+                else
+                  echo "::warning::Compat patch $(basename "$p") may have failed"
+                  cat /tmp/compat.log || true
+                fi
+              }
+            done
+            # Also apply to the repo's kernel-6.6 so future rsyncs stay fixed
+            # (build_kernel.sh will do this again in prepare_workspace, but do here too for immediacy)
+            cd "${{ github.workspace }}"
+            for p in "${patches[@]}"; do
+              echo "Applying $(basename "$p") to repo root"
+              patch -p1 --forward --batch < "$p" 2>&1 | tee /tmp/compat_root.log || {
+                if grep -q "Skipping patch\|already applied\|Reversed" /tmp/compat_root.log; then
+                  echo "Already applied at root: $(basename "$p")"
+                else
+                  echo "Note: patch $(basename "$p") not needed at root or failed (ok)"
+                fi
+              }
+            done
+          else
+            echo "No compat patch dir at $COMPAT_DIR"
+          fi
+
           KDIR="${{ env.G_KERNEL }}"
           cd "$KDIR"
 

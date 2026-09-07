@@ -1,0 +1,280 @@
+diff --git a/kernel-6.6/include/linux/loop.h b/kernel-6.6/include/linux/loop.h
+new file mode 100644
+index 000000000..a29f7509a
+--- /dev/null
++++ b/kernel-6.6/include/linux/loop.h
+@@ -0,0 +1,67 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/*
++ * Copyright 1993 by Theodore Ts'o.
++ */
++#ifndef _LINUX_LOOP_H
++#define _LINUX_LOOP_H
++
++#include <linux/bio.h>
++#include <linux/blkdev.h>
++#include <linux/blk-mq.h>
++#include <linux/spinlock.h>
++#include <linux/mutex.h>
++#include <uapi/linux/loop.h>
++
++/* Possible states of device */
++enum {
++	Lo_unbound,
++	Lo_bound,
++	Lo_rundown,
++	Lo_deleting,
++};
++
++struct loop_func_table;
++
++struct loop_device {
++	int		lo_number;
++	loff_t		lo_offset;
++	loff_t		lo_sizelimit;
++	int		lo_flags;
++	char		lo_file_name[LO_NAME_SIZE];
++
++	struct file	*lo_backing_file;
++	struct block_device *lo_device;
++
++	gfp_t		old_gfp_mask;
++
++	spinlock_t		lo_lock;
++	int			lo_state;
++	spinlock_t              lo_work_lock;
++	struct workqueue_struct *workqueue;
++	struct work_struct      rootcg_work;
++	struct list_head        rootcg_cmd_list;
++	struct list_head        idle_worker_list;
++	struct rb_root          worker_tree;
++	struct timer_list       timer;
++	bool			use_dio;
++	bool			sysfs_inited;
++
++	struct request_queue	*lo_queue;
++	struct blk_mq_tag_set	tag_set;
++	struct gendisk		*lo_disk;
++	struct mutex		lo_mutex;
++	bool			idr_visible;
++};
++
++struct loop_cmd {
++	struct list_head list_entry;
++	bool use_aio; /* use AIO interface to handle I/O */
++	atomic_t ref; /* only for aio */
++	long ret;
++	struct kiocb iocb;
++	struct bio_vec *bvec;
++	struct cgroup_subsys_state *blkcg_css;
++	struct cgroup_subsys_state *memcg_css;
++};
++
++#endif
+diff --git a/kernel-6.6/scripts/modules-check.sh b/kernel-6.6/scripts/modules-check.sh
+index 4c8da90de..b510967f6 100755
+--- a/kernel-6.6/scripts/modules-check.sh
++++ b/kernel-6.6/scripts/modules-check.sh
+@@ -10,14 +10,27 @@ fi
+ 
+ exit_code=0
+ 
+-# Check uniqueness of module names
++# Deduplicate modules.order to handle Kbuild bug where same entry appears twice
++if [ -f "$1" ]; then
++	tmp_sorted=$(mktemp)
++	sort -u "$1" -o "$tmp_sorted" 2>/dev/null || cp "$1" "$tmp_sorted"
++	mv "$tmp_sorted" "$1" 2>/dev/null || true
++fi
++
++# Check uniqueness of module names (only error if different paths share same basename)
+ check_same_name_modules()
+ {
+ 	for m in $(sed 's:.*/::' "$1" | sort | uniq -d)
+ 	do
+-		echo "error: the following would cause module name conflict:" >&2
+-		sed -n "/\/$m/s:^\(.*\)\.o\$:  \1.ko:p" "$1" >&2
+-		exit_code=1
++		paths=$(sed -n "/\/$m/s:^\(.*\)\.o$:\1:p" "$1" | sort -u)
++		num_paths=$(echo "$paths" | wc -l)
++		if [ "$num_paths" -gt 1 ]; then
++			echo "error: the following would cause module name conflict:" >&2
++			sed -n "/\/$m/s:^\(.*\)\.o$:  \1.ko:p" "$1" >&2
++			exit_code=1
++		else
++			echo "warning: duplicate $m with same path, deduplicated" >&2
++		fi
+ 	done
+ }
+ 
+diff --git a/vendor/mediatek/kernel_modules/connectivity/bt/linux_v2/include/btmtk_define.h b/vendor/mediatek/kernel_modules/connectivity/bt/linux_v2/include/btmtk_define.h
+index aac7c3925..24bc20e28 100644
+--- a/vendor/mediatek/kernel_modules/connectivity/bt/linux_v2/include/btmtk_define.h
++++ b/vendor/mediatek/kernel_modules/connectivity/bt/linux_v2/include/btmtk_define.h
+@@ -132,8 +132,14 @@
+ #define IS_NOT_ALIGN_4(_value)      (((_value) & 0x3) ? TRUE : FALSE)
+ #endif /* IS_NOT_ALIGN_4 */
+ 
++#include <linux/minmax.h>
++/* compat: guard MIN/MAX for kernel-6.6 minmax.h */
++#ifndef MIN
+ #define MIN(a, b) (((a) < (b)) ? (a) : (b))
++#endif
++#ifndef MAX
+ #define MAX(a, b) (((a) > (b)) ? (a) : (b))
++#endif
+ 
+ 
+ /**
+diff --git a/vendor/mediatek/kernel_modules/connectivity/bt/mt66xx/include/btmtk_define.h b/vendor/mediatek/kernel_modules/connectivity/bt/mt66xx/include/btmtk_define.h
+index 3b76cd217..707108334 100644
+--- a/vendor/mediatek/kernel_modules/connectivity/bt/mt66xx/include/btmtk_define.h
++++ b/vendor/mediatek/kernel_modules/connectivity/bt/mt66xx/include/btmtk_define.h
+@@ -97,8 +97,14 @@
+ #define IS_NOT_ALIGN_4(_value)      (((_value) & 0x3) ? TRUE : FALSE)
+ #endif /* IS_NOT_ALIGN_4 */
+ 
++#include <linux/minmax.h>
++/* compat: guard MIN/MAX for kernel-6.6 minmax.h */
++#ifndef MIN
+ #define MIN(a, b) (((a) < (b)) ? (a) : (b))
++#endif
++#ifndef MAX
+ #define MAX(a, b) (((a) > (b)) ? (a) : (b))
++#endif
+ 
+ 
+ /**
+diff --git a/vendor/mediatek/kernel_modules/connectivity/common/common_main/linux/stp_uart.c b/vendor/mediatek/kernel_modules/connectivity/common/common_main/linux/stp_uart.c
+index 15d4f4581..8d4b8a06b 100644
+--- a/vendor/mediatek/kernel_modules/connectivity/common/common_main/linux/stp_uart.c
++++ b/vendor/mediatek/kernel_modules/connectivity/common/common_main/linux/stp_uart.c
+@@ -44,8 +44,14 @@
+ 
+ #define HCIUARTSETPROTO        _IOW('U', 200, int)
+ 
++#include <linux/minmax.h>
++/* compat: guard MAX/MIN redefinition (kernel-6.6 minmax.h) */
++#ifndef MAX
+ #define MAX(a, b)        ((a) > (b) ? (a) : (b))
++#endif
++#ifndef MIN
+ #define MIN(a, b)        ((a) < (b) ? (a) : (b))
++#endif
+ 
+ #define PFX                         "[UART] "
+ #define UART_LOG_LOUD                 4
+diff --git a/vendor/mediatek/kernel_modules/gpu/gpu_mali/mali_avalon/mali-r49p1/drivers/gpu/arm/midgard/csf/mali_kbase_csf_scheduler.c b/vendor/mediatek/kernel_modules/gpu/gpu_mali/mali_avalon/mali-r49p1/drivers/gpu/arm/midgard/csf/mali_kbase_csf_scheduler.c
+index caac080a3..313a1f256 100644
+--- a/vendor/mediatek/kernel_modules/gpu/gpu_mali/mali_avalon/mali-r49p1/drivers/gpu/arm/midgard/csf/mali_kbase_csf_scheduler.c
++++ b/vendor/mediatek/kernel_modules/gpu/gpu_mali/mali_avalon/mali-r49p1/drivers/gpu/arm/midgard/csf/mali_kbase_csf_scheduler.c
+@@ -20,6 +20,7 @@
+  */
+ 
+ #include <linux/kthread.h>
++#include <linux/cred.h>
+ 
+ #include <mali_kbase.h>
+ #include "mali_kbase_config_defaults.h"
+@@ -157,10 +158,10 @@ static inline int gpu_metrics_ctx_init(struct kbase_context *kctx)
+ 	struct kbase_device *kbdev = kctx->kbdev;
+ 	int ret = 0;
+ 
+-	const struct cred *cred = get_current_cred_module();
++	const struct cred *cred = get_current_cred();
+ 	const unsigned int aid = cred->euid.val;
+ 
+-	put_cred_module(cred);
++	put_cred(cred);
+ 
+ 	/* Return early if this is not a Userspace created context */
+ 	if (unlikely(!kctx->filp))
+diff --git a/vendor/mediatek/kernel_modules/gpu/gpu_mali/mali_avalon/mali-r49p1/drivers/gpu/arm/midgard/mali_kbase_js.c b/vendor/mediatek/kernel_modules/gpu/gpu_mali/mali_avalon/mali-r49p1/drivers/gpu/arm/midgard/mali_kbase_js.c
+index 07042508f..66d7810b6 100644
+--- a/vendor/mediatek/kernel_modules/gpu/gpu_mali/mali_avalon/mali-r49p1/drivers/gpu/arm/midgard/mali_kbase_js.c
++++ b/vendor/mediatek/kernel_modules/gpu/gpu_mali/mali_avalon/mali-r49p1/drivers/gpu/arm/midgard/mali_kbase_js.c
+@@ -23,6 +23,7 @@
+  * Job Scheduler Implementation
+  */
+ #include <mali_kbase.h>
++#include <linux/cred.h>
+ #include <mali_kbase_js.h>
+ #include <tl/mali_kbase_tracepoints.h>
+ #include <mali_linux_trace.h>
+@@ -155,10 +156,10 @@ static inline int gpu_metrics_ctx_init(struct kbase_context *kctx)
+ 	unsigned long flags;
+ 	int ret = 0;
+ 
+-	const struct cred *cred = get_current_cred_module();
++	const struct cred *cred = get_current_cred();
+ 	const unsigned int aid = cred->euid.val;
+ 
+-	put_cred_module(cred);
++	put_cred(cred);
+ 
+ 	/* Return early if this is not a Userspace created context */
+ 	if (unlikely(!kctx->filp))
+@@ -3332,4 +3333,4 @@ base_jd_prio kbase_js_priority_check(struct kbase_device *kbdev, base_jd_prio pr
+ 		out_priority = pcm_device->ops.pcm_scheduler_priority_check(pcm_device, current,
+ 									    req_priority);
+ 	return kbasep_js_sched_prio_to_atom_prio(kbdev, out_priority);
+-}
++}
+\ No newline at end of file
+diff --git a/vendor/mediatek/kernel_modules/gpu/gpu_mali/mali_avalon/mali-r49p1/drivers/gpu/arm/midgard/mali_malisw.h b/vendor/mediatek/kernel_modules/gpu/gpu_mali/mali_avalon/mali-r49p1/drivers/gpu/arm/midgard/mali_malisw.h
+index a44765a05..79a8143c7 100644
+--- a/vendor/mediatek/kernel_modules/gpu/gpu_mali/mali_avalon/mali-r49p1/drivers/gpu/arm/midgard/mali_malisw.h
++++ b/vendor/mediatek/kernel_modules/gpu/gpu_mali/mali_avalon/mali-r49p1/drivers/gpu/arm/midgard/mali_malisw.h
+@@ -27,6 +27,7 @@
+ #define _MALISW_H_
+ 
+ #include <linux/version.h>
++#include <linux/minmax.h>
+ 
+ /**
+  * MIN - Return the lesser of two values.
+@@ -36,7 +37,9 @@
+  * As a macro it may evaluate its arguments more than once.
+  * Refer to MAX macro for more details
+  */
++#ifndef MIN
+ #define MIN(x, y) ((x) < (y) ? (x) : (y))
++#endif
+ 
+ /**
+  * MAX - Return the greater of two values.
+@@ -50,7 +53,9 @@
+  * to retrieve the min and max of two values, consider using a conditional swap
+  * instead.
+  */
++#ifndef MAX
+ #define MAX(x, y) ((x) < (y) ? (y) : (x))
++#endif
+ 
+ /**
+  * CSTD_UNUSED - Function-like macro for suppressing unused variable warnings.
+diff --git a/vendor/mediatek/kernel_modules/mtkcam/mtk-mae/isp8/mtk-mae-isp8.c b/vendor/mediatek/kernel_modules/mtkcam/mtk-mae/isp8/mtk-mae-isp8.c
+index 1dc763927..732900ada 100644
+--- a/vendor/mediatek/kernel_modules/mtkcam/mtk-mae/isp8/mtk-mae-isp8.c
++++ b/vendor/mediatek/kernel_modules/mtkcam/mtk-mae/isp8/mtk-mae-isp8.c
+@@ -7,6 +7,7 @@
+  */
+ 
+ #include <linux/module.h>
++#include <linux/minmax.h>
+ #include <linux/platform_device.h>
+ 
+ #include <linux/soc/mediatek/mtk-cmdq-ext.h>
+@@ -44,8 +45,12 @@
+ // #define FLOOR_NEG(X)		((X-(int)(X)) < 0 ? (int)(X-1) : (int)(X))
+ // #define FLOOR(X)		( ((X) > 0) ? FLOOR_POS(X) : FLOOR_NEG(X) )
+ 
++#ifndef MIN
+ #define MIN(X,Y)		(((X) > (Y)) ? (Y) : (X))
++#endif
++#ifndef MAX
+ #define MAX(X,Y)		(((X) > (Y)) ? (X) : (Y))
++#endif
+ #define ABS(X)			(((X) > 0) ? (X) : -(X))
+ #define ROUND(X,Y)		((int)((2*(X))+(Y))/(2*(Y)))
+ #define BUFFER_NAME_LEN		50

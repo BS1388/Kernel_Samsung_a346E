@@ -1,0 +1,19 @@
+diff --git a/vendor/mediatek/kernel_modules/connectivity/bt/linux_v2/include/btmtk_define.h b/vendor/mediatek/kernel_modules/connectivity/bt/linux_v2/include/btmtk_define.h
+index aac7c3925..24bc20e28 100644
+--- a/vendor/mediatek/kernel_modules/connectivity/bt/linux_v2/include/btmtk_define.h
++++ b/vendor/mediatek/kernel_modules/connectivity/bt/linux_v2/include/btmtk_define.h
+@@ -132,8 +132,14 @@
+ #define IS_NOT_ALIGN_4(_value)      (((_value) & 0x3) ? TRUE : FALSE)
+ #endif /* IS_NOT_ALIGN_4 */
+ 
++#include <linux/minmax.h>
++/* compat: guard MIN/MAX for kernel-6.6 minmax.h */
++#ifndef MIN
+ #define MIN(a, b) (((a) < (b)) ? (a) : (b))
++#endif
++#ifndef MAX
+ #define MAX(a, b) (((a) > (b)) ? (a) : (b))
++#endif
+ 
+ 
+ /**
