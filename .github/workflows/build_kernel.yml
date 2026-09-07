@@ -765,10 +765,134 @@ jobs:
           if [ -f "Kernel-6.6/Makefile" ]; then REAL_DIR="Kernel-6.6"; else REAL_DIR="kernel-6.6"; fi
           echo "G_KERNEL=$GITHUB_WORKSPACE/$REAL_DIR" >> $GITHUB_ENV
           echo "REAL_DIR=$REAL_DIR" >> $GITHUB_ENV
-          # Need to re-apply permissive/custom/SUSFS/compat/KSU because this is a fresh runner
-          # We do minimal: compat patches + permissive check + KSU setup will be redone via build_kernel.sh
-          # So just ensure G_KERNEL is set for build_kernel.sh
-          echo "Fresh runner, build_kernel.sh will handle full setup"
+          echo "Fresh runner, build_kernel.sh will handle full setup but we also ensure KSU here for correctness"
+          echo "### Re-apply done" >> $GITHUB_STEP_SUMMARY
+
+      # Fix KSUN not rooted: build job is on fresh runner, so KSU from #5 is not present.
+      # We must re-apply KSU + defconfig here before bazel build, otherwise Image is not rooted.
+      - name: Add KernelSU (re-apply for build job)
+        if: env.KSU_VAR != 'NO-ROOT'
+        run: |
+          set -eux
+          # G_KERNEL should already be set, but ensure
+          if [ -z "${G_KERNEL:-}" ]; then
+            if [ -f "Kernel-6.6/Makefile" ]; then REAL_DIR="Kernel-6.6"; else REAL_DIR="kernel-6.6"; fi
+            echo "G_KERNEL=$GITHUB_WORKSPACE/$REAL_DIR" >> $GITHUB_ENV
+            G_KERNEL="$GITHUB_WORKSPACE/$REAL_DIR"
+          fi
+          cd "${{ env.G_KERNEL }}"
+          # If already has KSU from previous attempt, clean first to avoid duplicate
+          rm -rf KernelSU-Next || true
+          case "${{ env.KSU_VAR }}" in
+            "KSUN")
+              echo "Adding KernelSU-Next (dev branch) for build job"
+              curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/refs/heads/dev/kernel/setup.sh" | bash -
+              ;;
+            "KSUN-SUSFS-v1.5.12")
+              echo "Adding KernelSU-Next (next-1) for SUSFS in build job"
+              curl -LSs "https://raw.githubusercontent.com/xnnnsets/KernelSU-Next/refs/heads/next-1/kernel/setup.sh" | bash -s next-1
+              for p in "${{ env.G_EXT }}/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
+                       "${{ env.G_EXT }}/kernel_patches/wild/susfs_fix_patches/v1.5.12/fix_core_hook.c.patch" \
+                       "${{ env.G_EXT }}/kernel_patches/wild/susfs_fix_patches/v1.5.12/fix_sucompat.c.patch" \
+                       "${{ env.G_EXT }}/kernel_patches/wild/susfs_fix_patches/v1.5.12/fix_kernel_compat.c.patch"; do
+                echo "Applying KSU SUSFS patch $(basename "$p")"
+                patch -p1 -d ./KernelSU-Next < "$p" || echo "::warning::Failed $p"
+              done
+              ;;
+          esac
+          if [ -d "./KernelSU-Next" ]; then
+            cd "./KernelSU-Next"
+            echo "KSU_GIT_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.9.5")" >> $GITHUB_ENV
+            echo "KSU_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")" >> $GITHUB_ENV
+            echo "KSU_VERSION=$((30000 + $(git rev-list --count HEAD 2>/dev/null || echo "0")))" >> $GITHUB_ENV
+            echo "KSU re-applied in build job: $(pwd) tag=$(grep KSU_GIT_TAG $GITHUB_ENV | tail -n1)"
+          else
+            echo "::error::KernelSU-Next not found after setup in build job"
+            exit 1
+          fi
+
+      - name: Remove GKI protected exports restriction (re-apply for build job)
+        if: env.KSU_VAR == 'KSUN-SUSFS-v1.5.12'
+        run: |
+          set -eux
+          echo "Removing protected_exports_list for SUSFS in build job"
+          for search_dir in kernel-6.6 Kernel-6.6 kernel/kernel-6.6; do
+            if [ -d "$search_dir" ]; then
+              echo "Searching $search_dir"
+              grep -rl "protected_exports_list" --include="BUILD.bazel" "$search_dir" 2>/dev/null | while read -r f; do
+                echo "Patching $f"
+                sed -i '/"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",\?/d' "$f" || true
+              done
+              find "$search_dir" -iname "abi_gki_protected_exports*" -type f -delete 2>/dev/null || true
+            fi
+          done
+
+      - name: Configure defconfig (re-apply for build job)
+        if: env.KSU_VAR != 'NO-ROOT'
+        run: |
+          set -eux
+          DEFCONFIG_FILE="${{ env.G_KERNEL }}/arch/arm64/configs/gki_defconfig"
+          [ -f "$DEFCONFIG_FILE" ] || DEFCONFIG_FILE="${{ github.workspace }}/${{ env.REAL_DIR }}/arch/arm64/configs/gki_defconfig"
+          [ -f "$DEFCONFIG_FILE" ] || { echo "::error::gki_defconfig not found"; find "${{ env.G_KERNEL }}/arch/arm64/configs" -type f | head -n 20; exit 1; }
+          echo "Using defconfig: $DEFCONFIG_FILE"
+          ls -lh "$DEFCONFIG_FILE"
+          echo "Cleaning old KSU/SUSFS configs for build job"
+          sed -i '/CONFIG_KSU=/d; /CONFIG_KPROBES=/d; /CONFIG_KPROBE_EVENTS=/d; /CONFIG_KSU_SUSFS/d; /CONFIG_IP_SET/d' "$DEFCONFIG_FILE" || true
+          case "${{ env.KSU_VAR }}" in
+            "KSUN")
+              cat >> "$DEFCONFIG_FILE" <<'EOF'
+          CONFIG_KSU=y
+          CONFIG_KPROBES=y
+          CONFIG_KPROBE_EVENTS=y
+          CONFIG_MODULES=y
+          EOF
+              ;;
+            "KSUN-SUSFS-v1.5.12")
+              cat >> "$DEFCONFIG_FILE" <<'EOF'
+          CONFIG_KSU=y
+          CONFIG_KSU_KPROBES_HOOK=n
+          CONFIG_MODULES=y
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SUS_OVERLAYFS=n
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SUS_SU=n
+          EOF
+              ;;
+          esac
+          cat >> "$DEFCONFIG_FILE" <<'EOF'
+          # IPSet Support
+          CONFIG_IP_SET=y
+          CONFIG_IP_SET_MAX=65534
+          CONFIG_IP_SET_BITMAP_IP=y
+          CONFIG_IP_SET_BITMAP_IPMAC=y
+          CONFIG_IP_SET_BITMAP_PORT=y
+          CONFIG_IP_SET_HASH_IP=y
+          CONFIG_IP_SET_HASH_IPMARK=y
+          CONFIG_IP_SET_HASH_IPPORT=y
+          CONFIG_IP_SET_HASH_IPPORTIP=y
+          CONFIG_IP_SET_HASH_IPPORTNET=y
+          CONFIG_IP_SET_HASH_IPMAC=y
+          CONFIG_IP_SET_HASH_MAC=y
+          CONFIG_IP_SET_HASH_NETPORTNET=y
+          CONFIG_IP_SET_HASH_NET=y
+          CONFIG_IP_SET_HASH_NETNET=y
+          CONFIG_IP_SET_HASH_NETPORT=y
+          CONFIG_IP_SET_HASH_NETIFACE=y
+          CONFIG_IP_SET_LIST_SET=y
+          EOF
+          tail -n 30 "$DEFCONFIG_FILE"
+          echo "Defconfig re-configured for ${{ env.KSU_VAR }} in build job"
 
       - name: Build kernel
         run: |
