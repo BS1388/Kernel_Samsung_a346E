@@ -14,6 +14,25 @@ Samsung's device modules were written for an older kernel and use APIs that chan
 Instead of editing files manually each time you update `kernel-6.6`, these patches can be
 re-applied automatically.
 
+## Golden rule: `kernel-6.6/` stays PRISTINE
+
+`kernel-6.6/` in this repo is a **verbatim, unmodified upstream tree (6.6.142)** — it is kept
+byte-identical to `A346E:kernel-6.6`. **Never edit it directly.** Every change we need lives
+in this folder as a `.patch` file and is applied at build time by
+`build_kernel.sh → apply_compat_patches()`, which runs *after* the tree has been copied into
+the bazel workspace (`kernel/kernel-6.6/`). So the patched files only ever exist in the build
+copy; the repo copy stays clean.
+
+Why: when you bump/replace `kernel-6.6` with a newer upstream tree, you just drop the new tree
+in and rebuild — no merge conflicts, no lost fixes, nothing to remember.
+
+New fix needed? Do it like this:
+```bash
+# edit the file inside the *build copy* or the repo copy, then:
+git diff -- kernel-6.6/ > patch/compat-kernel-6.6/00NN-short-name.patch
+git checkout -- kernel-6.6/            # <-- put the tree back to pristine
+```
+
 ## Auto-apply
 
 `build_kernel.sh` → `apply_compat_patches()` runs on every build:
@@ -38,7 +57,10 @@ for p in patch/compat-kernel-6.6/*.patch; do patch -p1 < "$p"; done
 - `0008-0009` — `cred` fixes vendor Mali (`mali_kbase_js.c`, `mali_csf_scheduler.c`)
 - `0010` — remaining 75 files: all `kernel/kernel_device_modules-6.6` MAX/MIN batch (zsmalloc, stmmac VLA, rpmb, cpufreq, ged_dvfs, gpufreq, drm, 30+ thermal tscpu/tspmic, mdpm, blocktag, etc.) + Samsung PM (`Kconfig` SEC_PM, `Makefile`, `sec_wakeup_cpu_allocator.c` power.h), UFS (`ufs-sec-feature.c`), wlan `sha256/sha512-internal.c` (gen4m/s1), `disable_module_sig.config`, and `kernel/.../mali_malisw.h` kernel copy
 - `0000` — consolidated single-file version of all 84 files (auto-skipped when splits exist — see `build_kernel.sh:apply_compat_patches`)
-- `0011` — zram: quote `default_compressor` (`static const char *default_compressor = "lzo-rle";`) — without the quotes the GKI build dies with `use of undeclared identifier 'lzo'`
+- `0011` — *(removed)* zram `default_compressor` quoting. The pristine 6.6.142 tree already has
+  the correct upstream line `static const char *default_compressor = CONFIG_ZRAM_DEF_COMP;`,
+  so the fix is only needed if someone hand-edits `zram_drv.c` again (the old broken line was
+  `= lzo-rle;` without quotes → `error: use of undeclared identifier 'lzo'`).
 - `0012` — **Samsung KDP (Knox) cred compat symbols** (`kernel-6.6/kernel/cred.c`, `kernel-6.6/include/linux/cred.h`).
   Samsung's stock kernel is built with `CONFIG_KDP_CRED=y`, so the inline helpers in their
   `<linux/cred.h>` (`get_cred()`, `get_cred_rcu()`, `put_cred()`, `get_new_cred()`) call

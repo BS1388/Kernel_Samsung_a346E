@@ -145,23 +145,6 @@ struct cred {
 	};
 } __randomize_layout;
 
-/*
- * Samsung KDP (Knox Kernel Data Protection) compatibility shims - see the
- * implementation at the bottom of kernel/cred.c. Stock Samsung modules are
- * built with CONFIG_KDP_CRED=y and reference these helpers instead of
- * touching cred->usage / cred->non_rcu directly.
- */
-#ifndef CONFIG_KDP_CRED
-extern bool kdp_enable;
-extern void kdp_usecount_inc(struct cred *cred);
-extern unsigned int kdp_usecount_inc_not_zero(struct cred *cred);
-extern unsigned int kdp_usecount_dec_and_test(struct cred *cred);
-extern unsigned int kdp_get_usecount(struct cred *cred);
-extern void kdp_set_cred_non_rcu(struct cred *cred, int val);
-extern int is_kdp_protect_addr(unsigned long addr);
-extern int security_integrity_current(void);
-#endif /* !CONFIG_KDP_CRED */
-
 extern void __put_cred(struct cred *);
 extern void exit_creds(struct task_struct *);
 extern int copy_creds(struct task_struct *, unsigned long);
