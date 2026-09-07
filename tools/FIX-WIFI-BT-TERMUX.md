@@ -10,7 +10,7 @@
 > bluetooth:    Unknown symbol kdp_set_cred_non_rcu (err -2)
 > bt_drv_6877:  Unknown symbol hci_register_dev (err -2)   ← دومینو
 > ```
-> فیکس دائمی: `patch/compat-kernel-6.6/0012-add-samsung-kdp-cred-compat-symbols.patch`
+> فیکس دائمی: `kernel/patches-kernel-6.6/0003-samsung-kdp-cred-compat-symbols.patch`
 > (این سیمبل‌ها رو با رفتار vanilla از کرنل export می‌کنه). با کرنل بیلدشده بعد از این پچ،
 > BT/WiFi/هات‌اسپات روی رام استوک بدون هیچ کار اضافه‌ای کار می‌کنن.
 >

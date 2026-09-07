@@ -38,7 +38,7 @@ on:
         required: true
         default: false
       custom_patches:
-        description: "Also apply extra patches from patch/*.patch? (patch/compat-kernel-6.6/* is ALWAYS applied)"
+        description: "Also apply extra patches from patch/*.patch? (kernel/patches-kernel-6.6/* is ALWAYS applied)"
         type: boolean
         required: true
         default: false
@@ -207,7 +207,7 @@ jobs:
   # ==========================================================================
   # #4 Patches -- dry-run EVERY patch that the build will apply.
   #    Order/behaviour mirrors build_kernel.sh exactly:
-  #      always : patch/compat-kernel-6.6/*.patch  (apply_compat_patches)
+  #      always : kernel/patches-kernel-6.6/*.patch (apply_kernel66_patches)
   #      if PERMISSIVE=true : Permissive/selinux-make-permissive.patch
   #      if CUSTOM_PATCH=true : patch/*.patch      (apply_optional_patches)
   # ==========================================================================
@@ -233,44 +233,23 @@ jobs:
           elif [ -f "kernel-6.6/Makefile" ]; then echo "KDIR=kernel-6.6" >> "$GITHUB_ENV"
           else echo "::error::no kernel tree found"; exit 1; fi
 
-      # The compat fixes are baked into the source tree, so this folder is
-      # normally empty; any .patch dropped in there is still auto-applied by
-      # build_kernel.sh, so dry-run whatever is present.
-      - name: Compat patches (patch/compat-kernel-6.6/, if any)
+      # kernel-6.6/ is pristine upstream; everything this device needs is a
+      # patch in kernel/patches-kernel-6.6/, applied on every build by
+      # build_kernel.sh (apply_kernel66_patches -> that folder's apply.sh).
+      # Dry-run them here so a patch that no longer fits a freshly uploaded
+      # kernel tree fails the run in a minute instead of 50 min into the build.
+      - name: kernel-6.6 patches (always applied)
         run: |
           set -eu
-          DIR="patch/compat-kernel-6.6"
-          shopt -s nullglob
-          ALL=("$DIR"/*.patch)
-          shopt -u nullglob
-          if [ ${#ALL[@]} -eq 0 ]; then
-            echo "no .patch files - all compat fixes are baked into the source tree (verified in the next step)"
-            exit 0
-          fi
+          A="kernel/patches-kernel-6.6/apply.sh"
+          [ -f "$A" ] || { echo "::error::$A missing"; exit 1; }
+          chmod +x "$A"
+          bash "$A" --check "$KDIR"
 
-          FAIL=0
-          for p in "${ALL[@]}"; do
-            base=$(basename "$p")
-            # 0000-all-* is the consolidated copy of the split patches, the build
-            # skips it whenever split patches exist -- do the same here.
-            if [ "${base#0000-}" != "$base" ] && [ ${#ALL[@]} -gt 1 ]; then
-              echo "SKIP    $base (consolidated, split patches present)"; continue
-            fi
-            if patch -p1 --dry-run --forward --batch < "$p" > /tmp/out.log 2>&1; then
-              echo "APPLIES $base"
-            elif grep -q "Reversed (or previously applied)" /tmp/out.log; then
-              echo "ALREADY $base (already in tree)"
-            else
-              echo "::error::BROKEN  $base"; sed 's/^/          /' /tmp/out.log; FAIL=1
-            fi
-          done
-          [ "$FAIL" = "0" ] || { echo "::error::at least one compat patch does not apply to $KDIR"; exit 1; }
-          echo "compat patches: ${#ALL[@]} checked"
-
-      # Guard: the compat fixes live in the tree now, so make sure none of them
-      # was lost (bad merge, kernel-6.6 replaced, someone reverted a file...).
-      # This is the cheap replacement for dry-running the old 0001..0012 files.
-      - name: Verify baked-in compat fixes
+      # These fixes live directly in Samsung's own trees (vendor/,
+      # kernel/kernel_device_modules-6.6/) because we never replace those
+      # wholesale - just make sure none of them got lost.
+      - name: Verify in-tree fixes (vendor / device modules)
         run: |
           set -eu
           FAIL=0
@@ -281,15 +260,11 @@ jobs:
               echo "::error::MISSING $1  ($2)"; FAIL=1
             fi
           }
-          check "loop.h restored for zram_ext"        "$KDIR/include/linux/loop.h"          "lo_backing_file"
-          check "modules.order dedup (sec_thermistor)" "$KDIR/scripts/modules-check.sh"     "sort -u"
-          check "KDP cred symbols exported"            "$KDIR/kernel/cred.c"                "EXPORT_SYMBOL(kdp_usecount_inc)"
-          check "KDP cred symbols declared"            "$KDIR/include/linux/cred.h"         "kdp_set_cred_non_rcu"
-          check "SEC_PM Kconfig"                       "$KDIR/../kernel/kernel_device_modules-6.6/drivers/samsung/pm/Kconfig" "config SEC_PM"
-          check "MAX/MIN guard (stp_uart)"             "vendor/mediatek/kernel_modules/connectivity/common/common_main/linux/stp_uart.c" "#ifndef MAX"
+          check "SEC_PM Kconfig"           "kernel/kernel_device_modules-6.6/drivers/samsung/pm/Kconfig" "config SEC_PM"
+          check "MAX/MIN guard (stp_uart)" "vendor/mediatek/kernel_modules/connectivity/common/common_main/linux/stp_uart.c" "#ifndef MAX"
 
-          # zram: the upstream line is `= CONFIG_ZRAM_DEF_COMP;`. A hand-edit
-          # once turned it into `= lzo-rle;` (no quotes) -> build error.
+          # zram: upstream line is `= CONFIG_ZRAM_DEF_COMP;`. A hand-edit once
+          # turned it into `= lzo-rle;` (no quotes) -> build error.
           Z="$KDIR/drivers/block/zram/zram_drv.c"
           if grep -qE '^static const char \*default_compressor = (CONFIG_ZRAM_DEF_COMP|"[a-z0-9-]+");' "$Z"; then
             echo "OK      zram default_compressor is valid C"
@@ -298,10 +273,6 @@ jobs:
           fi
 
           # Samsung-only cred API must be gone from the modules we build
-          # (kernel 6.6 has no *_module variants). NOTE: unused duplicates under
-          # kernel/kernel_device_modules-6.6/drivers/gpu/... and mbraink still
-          # contain it -- they are not compiled in this configuration, so they
-          # are only reported as a warning.
           if grep -rl --include=*.c --include=*.h "get_current_cred_module\|put_cred_module" vendor 2>/dev/null | grep -q .; then
             echo "::error::get_current_cred_module/put_cred_module still present in vendor/:"
             grep -rl --include=*.c --include=*.h "get_current_cred_module\|put_cred_module" vendor 2>/dev/null | sed 's/^/          /'
@@ -309,10 +280,8 @@ jobs:
           else
             echo "OK      no Samsung-only cred API in vendor/ (the modules we build)"
           fi
-          N=$(grep -rl --include=*.c "get_current_cred_module\|put_cred_module" kernel 2>/dev/null | wc -l)
-          [ "$N" = "0" ] || echo "NOTE    $N uncompiled file(s) under kernel/ still use the old cred API (harmless)"
 
-          [ "$FAIL" = "0" ] || { echo "::error::a compat fix is missing from the source tree - the build would fail"; exit 1; }
+          [ "$FAIL" = "0" ] || { echo "::error::a fix is missing from the source tree - the build would fail"; exit 1; }
 
       - name: SELinux permissive patch (PERMISSIVE=true)
         if: env.PERMISSIVE == 'true'
@@ -341,7 +310,7 @@ jobs:
           EXTRA=(patch/*.patch)
           shopt -u nullglob
           if [ ${#EXTRA[@]} -eq 0 ]; then
-            echo "::warning::CUSTOM_PATCH=true but patch/ has no *.patch file (patch/compat-kernel-6.6/ is applied anyway)"
+            echo "::warning::CUSTOM_PATCH=true but patch/ has no *.patch file (kernel/patches-kernel-6.6/ is applied anyway)"
             exit 0
           fi
           FAIL=0
@@ -362,7 +331,7 @@ jobs:
         run: |
           {
             echo "### #4 Patches - OK"
-            echo "- compat patches (\`patch/compat-kernel-6.6/\`): validated"
+            echo "- kernel-6.6 patches (\`kernel/patches-kernel-6.6/\`): validated"
             echo "- permissive patch: \`${PERMISSIVE}\`"
             echo "- extra patches (\`patch/*.patch\`): \`${CUSTOM_PATCH}\`"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -632,7 +601,7 @@ jobs:
 
       # build_kernel.sh applies, in this order:
       #   apply_optional_patches : Permissive/ (PERMISSIVE=true) + patch/*.patch (CUSTOM_PATCH=true)
-      #   apply_compat_patches   : patch/compat-kernel-6.6/*.patch  (always)
+      #   apply_kernel66_patches : kernel/patches-kernel-6.6/*.patch (always)
       #   apply_compat_fixes     : inline loop.h / MAX-MIN / SEC_PM fixes
       - name: Build kernel
         id: build

@@ -10,8 +10,8 @@
 #   3. sync_aosp_kernel       -- sync common-android15-6.6
 #   4. link_prebuilts         -- prebuilts & external tools
 #   5. prepare_workspace      -- fix bazel sandbox (rsync, FDO, sig)
+#      5a.   apply_kernel66_patches -- kernel/patches-kernel-6.6/*.patch (always)
 #      5a-0. apply_optional_patches -- PERMISSIVE / CUSTOM_PATCH build options
-#      5a.   apply_compat_patches   -- auto-apply patch/compat-kernel-6.6/*.patch
 #      5b.   apply_compat_fixes     -- inline sed/header fixes (loop.h, MAX/MIN...)
 #      5c.   stamp_ksu_version      -- embed real KernelSU-Next version (not v0.0.1)
 #   6. patch_stamp            -- stamp.bzl & shebang fixes
@@ -24,18 +24,17 @@
 #   CUSTOM_PATCH=true|false   also apply patch/*.patch (top level)
 #   KSU_VAR                   informational only; the workflow installs KSU
 #
-# kernel-6.6/ carries the compat fixes directly in the tree (that is why
-# patch/compat-kernel-6.6/ has no .patch files). apply_compat_patches() still
-# applies anything you drop in that folder, and apply_compat_fixes() repairs the
-# workspace copy inline as a safety net. See patch/compat-kernel-6.6/README.md
-# before replacing kernel-6.6/ with a newer upstream tree.
+# kernel-6.6/ is kept PRISTINE (plain upstream common-android15-6.6). Every
+# change this device needs is a patch in kernel/patches-kernel-6.6/, applied on
+# every build by apply_kernel66_patches(). Updating the kernel is therefore just
+# "drop in the new tree" - nothing to re-apply by hand.
+# See kernel/patches-kernel-6.6/README.md.
 #
 # Compat patches:
-#   Patches in patch/compat-kernel-6.6/ are auto-applied via
-#   apply_compat_patches() before the inline fixes, so a fresh kernel-6.6
-#   checkout can be fixed by just enabling the patch dir. Use:
-#     patch -p1 --forward < patch/compat-kernel-6.6/*.patch
-#   See patch/README.md and patch/compat-kernel-6.6/README.md.
+#   kernel/patches-kernel-6.6/*.patch  -> always (apply_kernel66_patches)
+#   Permissive/*.patch                 -> only when PERMISSIVE=true
+#   patch/*.patch                      -> only when CUSTOM_PATCH=true
+#   Manually: kernel/patches-kernel-6.6/apply.sh [--check|--revert]
 # ==============================================================================
 set -euo pipefail
 
@@ -210,7 +209,7 @@ link_prebuilts() {
 # 5a-0. Optional patches driven by the build options (CI inputs / env vars):
 #         PERMISSIVE=true    -> Permissive/selinux-make-permissive.patch
 #         CUSTOM_PATCH=true  -> patch/*.patch (top level only)
-#       patch/compat-kernel-6.6/*.patch is ALWAYS applied, see 5a below.
+#       kernel/patches-kernel-6.6/*.patch is ALWAYS applied, see 5a below.
 #
 #       These are applied to the SOURCE tree (kernel-6.6/) before it is copied
 #       into the bazel workspace. Previously the workflow did this in a separate
@@ -244,7 +243,7 @@ apply_optional_patches() {
     local extra=("${ROOT_DIR}/patch"/*.patch)
     shopt -u nullglob
     if [ ${#extra[@]} -eq 0 ]; then
-      warn "CUSTOM_PATCH=true but patch/ has no *.patch files (patch/compat-kernel-6.6/ is applied anyway)"
+      warn "CUSTOM_PATCH=true but patch/ has no *.patch files (kernel/patches-kernel-6.6/ is applied anyway)"
     else
       log "CUSTOM_PATCH=true -> applying ${#extra[@]} extra patch(es) to $kdir"
       local p
@@ -257,73 +256,33 @@ apply_optional_patches() {
 }
 
 # ------------------------------------------------------------------------------
-# 5a. Auto-apply compat patches from patch/compat-kernel-6.6/
-#      These are the persistent patches for kernel-6.6 update breakage.
-#      They are also committed directly to the tree, but applying them here
-#      lets a fresh kernel-6.6 checkout be fixed automatically.
+# 5a. kernel-6.6 compatibility patches -- kernel/patches-kernel-6.6/
+#     The kernel-6.6/ tree stays PRISTINE (plain upstream common-android15-6.6);
+#     everything this device needs on top of it is a numbered patch in
+#     kernel/patches-kernel-6.6/, applied here by that folder's apply.sh.
+#     Updating the kernel is therefore just "drop in the new tree" -- the
+#     patches are re-applied automatically on the next build.
+#     Patches are -p1 relative to the KERNEL TREE ROOT (scripts/, kernel/,
+#     include/), so they do not care whether the folder is kernel-6.6 or
+#     Kernel-6.6, and they are idempotent (--forward skips what is applied).
 # ------------------------------------------------------------------------------
-apply_compat_patches() {
-  log "Applying compat patches from patch/compat-kernel-6.6/ (if any)"
+apply_kernel66_patches() {
+  local kdir applier
+  kdir="$(detect_kernel_dir)"
+  applier="${ROOT_DIR}/kernel/patches-kernel-6.6/apply.sh"
 
-  local compat_dirs=(
-    "${ROOT_DIR}/patch/compat-kernel-6.6"
-    "patch/compat-kernel-6.6"
-    "../patch/compat-kernel-6.6"
-  )
-  local compat_dir=""
-  for d in "${compat_dirs[@]}"; do
-    if [ -d "$d" ]; then
-      compat_dir="$d"
-      break
-    fi
-  done
-
-  if [ -z "$compat_dir" ] || [ ! -d "$compat_dir" ]; then
-    log "No compat patch dir found, skipping auto-apply"
+  if [ ! -f "$applier" ]; then
+    warn "kernel/patches-kernel-6.6/apply.sh not found - kernel-6.6 stays unpatched"
     return 0
   fi
 
-  log "Using compat patch dir: $compat_dir"
-  shopt -s nullglob
-  local patches=("$compat_dir"/*.patch)
-  # Exclude the consolidated 0000-all* to avoid double-apply when split patches exist
-  # (if only 0000 exists it will still be applied)
-  local filtered=()
-  for p in "${patches[@]}"; do
-    local base
-    base="$(basename "$p")"
-    if [[ "$base" == 0000-* ]] && [ ${#patches[@]} -gt 1 ]; then
-      log "Skipping consolidated $base (split patches present)"
-      continue
-    fi
-    filtered+=("$p")
-  done
-  shopt -u nullglob
-
-  if [ ${#filtered[@]} -eq 0 ]; then
-    log "No compat patches to apply"
-    return 0
+  log "Applying kernel-6.6 patches from kernel/patches-kernel-6.6/ to $kdir"
+  chmod +x "$applier" 2>/dev/null || true
+  if bash "$applier" "$kdir"; then
+    ok "kernel-6.6 patches applied"
+  else
+    die "kernel-6.6 patches failed to apply to $kdir (see the log above)"
   fi
-
-  log "Found ${#filtered[@]} compat patches:"
-  printf "  - %s\n" "${filtered[@]}"
-
-  for p in "${filtered[@]}"; do
-    log "Applying $(basename "$p")"
-    if patch -p1 --forward --batch < "$p" 2>&1 | tee /tmp/compat_patch.log; then
-      ok "Applied $(basename "$p")"
-    else
-      # patch --forward returns non-zero if already applied or fails
-      if grep -q "Skipping patch\|already applied\|Reversed (or previously applied) patch detected" /tmp/compat_patch.log 2>/dev/null; then
-        log "Skipped $(basename "$p") (already applied)"
-      else
-        warn "Compat patch $(basename "$p") may have failed - see log"
-        cat /tmp/compat_patch.log || true
-        # Don't fail build for compat patches - inline fixes below will handle it
-      fi
-    fi
-  done
-  ok "Compat patches done"
 }
 
 # ------------------------------------------------------------------------------
@@ -331,9 +290,6 @@ apply_compat_patches() {
 # ------------------------------------------------------------------------------
 apply_compat_fixes() {
   log "Applying compatibility fixes for kernel-6.6 vs device_modules-6.6"
-
-  # First try auto-applying patch files (idempotent)
-  apply_compat_patches
 
   # --- Fix 1: Restore include/linux/loop.h which was removed in new kernel ---
   # New kernel moved struct loop_device to drivers/block/loop.c (private),
@@ -757,8 +713,11 @@ stamp_ksu_version() {
 prepare_workspace() {
   log "Preparing kernel/ workspace (fix bazel sandbox)"
 
-  # Build-option patches (permissive / extra) go on the SOURCE tree first,
-  # so the copy below carries them into the bazel workspace.
+  # Patches go on the SOURCE tree first, so the copy below carries them into
+  # the bazel workspace:
+  #   1. kernel-6.6 compat patches   (always, kernel/patches-kernel-6.6/)
+  #   2. build-option patches        (permissive / patch/*.patch)
+  apply_kernel66_patches
   apply_optional_patches
 
   local real_kernel_dir
