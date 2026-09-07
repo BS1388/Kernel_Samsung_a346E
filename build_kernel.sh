@@ -370,6 +370,30 @@ LOOP_EOF
     fi
   done
 
+  # --- Fix 2e: gpu mali cred module functions removed in kernel 6.6 ---
+  # Error: mali_kbase_js.c:158:28: error: call to undeclared function 'get_current_cred_module'
+  # And put_cred_module. New kernel 6.6 uses get_current_cred()/put_cred() with <linux/cred.h>
+  log "Fixing gpu mali cred module functions"
+  for vd in "${ROOT_DIR}/vendor/mediatek/kernel_modules/gpu" "../vendor/mediatek/kernel_modules/gpu" "vendor/mediatek/kernel_modules/gpu" "${ROOT_DIR}/vendor" "../vendor"; do
+    if [ -d "$vd" ]; then
+      find "$vd" \( -name "*.c" -o -name "*.h" \) -type f | while read -r f; do
+        if grep -q "get_current_cred_module\|put_cred_module" "$f" 2>/dev/null; then
+          log "Patching $f for cred module compat"
+          sed -i 's/get_current_cred_module()/get_current_cred()/g' "$f" || true
+          sed -i 's/put_cred_module(/put_cred(/g' "$f" || true
+          if ! grep -q "linux/cred.h" "$f"; then
+            if grep -q "#include" "$f"; then
+              sed -i '0,/#include.*/s//#include <linux\/cred.h>\n&/' "$f" 2>/dev/null || sed -i '1i #include <linux/cred.h>' "$f" || true
+            else
+              sed -i '1i #include <linux/cred.h>' "$f" || true
+            fi
+          fi
+        fi
+      done
+      break
+    fi
+  done
+
   # --- Fix 2a: stmmac VLA error with max_t ---
   # Error: stmmac_main.c:2855:13: error: variable length array used [-Werror,-Wvla]
   # int status[max_t(u32, MTL_MAX_TX_QUEUES, MTL_MAX_RX_QUEUES)];

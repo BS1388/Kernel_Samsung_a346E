@@ -23,6 +23,7 @@
  * Job Scheduler Implementation
  */
 #include <mali_kbase.h>
+#include <linux/cred.h>
 #include <mali_kbase_js.h>
 #include <tl/mali_kbase_tracepoints.h>
 #include <mali_linux_trace.h>
@@ -155,10 +156,10 @@ static inline int gpu_metrics_ctx_init(struct kbase_context *kctx)
 	unsigned long flags;
 	int ret = 0;
 
-	const struct cred *cred = get_current_cred_module();
+	const struct cred *cred = get_current_cred();
 	const unsigned int aid = cred->euid.val;
 
-	put_cred_module(cred);
+	put_cred(cred);
 
 	/* Return early if this is not a Userspace created context */
 	if (unlikely(!kctx->filp))

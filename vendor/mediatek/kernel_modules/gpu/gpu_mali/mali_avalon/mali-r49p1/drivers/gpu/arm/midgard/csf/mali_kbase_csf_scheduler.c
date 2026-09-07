@@ -20,6 +20,7 @@
  */
 
 #include <linux/kthread.h>
+#include <linux/cred.h>
 
 #include <mali_kbase.h>
 #include "mali_kbase_config_defaults.h"
@@ -157,10 +158,10 @@ static inline int gpu_metrics_ctx_init(struct kbase_context *kctx)
 	struct kbase_device *kbdev = kctx->kbdev;
 	int ret = 0;
 
-	const struct cred *cred = get_current_cred_module();
+	const struct cred *cred = get_current_cred();
 	const unsigned int aid = cred->euid.val;
 
-	put_cred_module(cred);
+	put_cred(cred);
 
 	/* Return early if this is not a Userspace created context */
 	if (unlikely(!kctx->filp))
