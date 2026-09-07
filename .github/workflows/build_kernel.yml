@@ -79,10 +79,6 @@ jobs:
     name: "#1 Checkout & Detect"
     runs-on: ubuntu-22.04
     timeout-minutes: 15
-    outputs:
-      real_dir: ${{ steps.detect.outputs.real_dir }}
-      artifact: ${{ steps.detect.outputs.artifact }}
-      selinux: ${{ steps.detect.outputs.selinux }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -105,12 +101,6 @@ jobs:
 
           SEL=$([ "$PERMISSIVE" = "true" ] && echo permissive || echo enforcing)
           CUS=$([ "$CUSTOM_PATCH" = "true" ] && echo custom || echo nocustom)
-          {
-            echo "real_dir=$REAL_DIR"
-            echo "selinux=$SEL"
-            echo "artifact=kernel-image-${KSU_VAR}-${SEL}-${CUS}"
-          } >> "$GITHUB_OUTPUT"
-
           if [ ! -f Google-FDO/kernel.afdo ] && [ -d google-FDO ]; then mv google-FDO Google-FDO; fi
           [ -f Google-FDO/kernel.afdo ] || echo "::warning::Google-FDO/kernel.afdo missing"
 
@@ -232,13 +222,23 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
+      # Every job runs on its own runner: detect locally instead of pulling an
+      # output from a job that is not a *direct* dependency -- needs.<job> only
+      # resolves for direct needs, so `needs.detect.*` here silently expanded to
+      # an empty string and every path check failed.
+      - name: Detect kernel dir
+        run: |
+          set -eu
+          if [ -f "Kernel-6.6/Makefile" ]; then echo "KDIR=Kernel-6.6" >> "$GITHUB_ENV"
+          elif [ -f "kernel-6.6/Makefile" ]; then echo "KDIR=kernel-6.6" >> "$GITHUB_ENV"
+          else echo "::error::no kernel tree found"; exit 1; fi
+
       # The compat fixes are baked into the source tree, so this folder is
       # normally empty; any .patch dropped in there is still auto-applied by
       # build_kernel.sh, so dry-run whatever is present.
       - name: Compat patches (patch/compat-kernel-6.6/, if any)
         run: |
           set -eu
-          KDIR="${{ needs.detect.outputs.real_dir }}"
           DIR="patch/compat-kernel-6.6"
           shopt -s nullglob
           ALL=("$DIR"/*.patch)
@@ -273,7 +273,6 @@ jobs:
       - name: Verify baked-in compat fixes
         run: |
           set -eu
-          KDIR="${{ needs.detect.outputs.real_dir }}"
           FAIL=0
           check() { # check <description> <file> <grep-pattern>
             if [ -f "$2" ] && grep -q "$3" "$2"; then
@@ -319,7 +318,6 @@ jobs:
         if: env.PERMISSIVE == 'true'
         run: |
           set -eu
-          KDIR="${{ needs.detect.outputs.real_dir }}"
           P="Permissive/selinux-make-permissive.patch"
           [ -f "$P" ] || { echo "::error::PERMISSIVE=true but $P is missing"; exit 1; }
           if patch -p1 -d "$KDIR" --dry-run --forward --batch < "$P" > /tmp/perm.log 2>&1; then
@@ -339,7 +337,6 @@ jobs:
         if: env.CUSTOM_PATCH == 'true'
         run: |
           set -eu
-          KDIR="${{ needs.detect.outputs.real_dir }}"
           shopt -s nullglob
           EXTRA=(patch/*.patch)
           shopt -u nullglob
@@ -379,10 +376,6 @@ jobs:
     needs: patches
     runs-on: ubuntu-22.04
     timeout-minutes: 15
-    outputs:
-      ksu_tag: ${{ steps.resolve.outputs.ksu_tag }}
-      ksu_code: ${{ steps.resolve.outputs.ksu_code }}
-      ksu_sha: ${{ steps.resolve.outputs.ksu_sha }}
     steps:
       - name: Resolve KernelSU-Next version
         id: resolve
@@ -426,12 +419,16 @@ jobs:
   # ==========================================================================
   build:
     name: "#6 Build"
-    needs: [detect, kernelsu]
+    needs: kernelsu
     runs-on: ubuntu-22.04
     timeout-minutes: 330
     outputs:
       image_size: ${{ steps.build.outputs.image_size }}
       image_sha: ${{ steps.build.outputs.image_sha }}
+      artifact: ${{ steps.meta.outputs.artifact }}
+      selinux: ${{ steps.meta.outputs.selinux }}
+      ksu_tag: ${{ steps.ksu.outputs.ksu_tag }}
+      ksu_code: ${{ steps.ksu.outputs.ksu_code }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -467,11 +464,19 @@ jobs:
           git config --global user.name  "Builder"
           git config --global --add safe.directory "*"
 
-      - name: Set kernel dir
+      - name: Set kernel dir & artifact name
+        id: meta
         run: |
           set -eu
-          echo "REAL_DIR=${{ needs.detect.outputs.real_dir }}" >> "$GITHUB_ENV"
-          echo "G_KERNEL=$GITHUB_WORKSPACE/${{ needs.detect.outputs.real_dir }}" >> "$GITHUB_ENV"
+          if [ -f "Kernel-6.6/Makefile" ]; then REAL_DIR=Kernel-6.6
+          elif [ -f "kernel-6.6/Makefile" ]; then REAL_DIR=kernel-6.6
+          else echo "::error::no kernel tree found"; exit 1; fi
+          echo "REAL_DIR=$REAL_DIR" >> "$GITHUB_ENV"
+          echo "G_KERNEL=$GITHUB_WORKSPACE/$REAL_DIR" >> "$GITHUB_ENV"
+          SEL=$([ "$PERMISSIVE" = "true" ] && echo permissive || echo enforcing)
+          CUS=$([ "$CUSTOM_PATCH" = "true" ] && echo custom || echo nocustom)
+          echo "selinux=$SEL" >> "$GITHUB_OUTPUT"
+          echo "artifact=kernel-image-${KSU_VAR}-${SEL}-${CUS}" >> "$GITHUB_OUTPUT"
 
       - name: External deps (SUSFS only)
         if: env.KSU_VAR == 'KSUN-SUSFS-v1.5.12'
@@ -510,6 +515,7 @@ jobs:
           find "$GITHUB_WORKSPACE/$REAL_DIR" -iname "abi_gki_protected_exports*" -type f -delete 2>/dev/null || true
 
       - name: Add KernelSU-Next
+        id: ksu
         if: env.KSU_VAR != 'NO-ROOT'
         run: |
           set -eu
@@ -553,6 +559,7 @@ jobs:
             echo "::warning::KSU_VERSION_FALLBACK not found in kernel/Kbuild (layout changed?)"
           fi
           { echo "KSU_GIT_TAG=$KSU_TAG"; echo "KSU_VERSION=$KSU_CODE"; echo "KSU_COMMIT=$KSU_SHA"; } >> "$GITHUB_ENV"
+          { echo "ksu_tag=$KSU_TAG"; echo "ksu_code=$KSU_CODE"; } >> "$GITHUB_OUTPUT"
           echo "KernelSU-Next $KSU_TAG ($KSU_CODE) @ $KSU_SHA"
 
       - name: Defconfig (KSU + IPSet)
@@ -649,7 +656,7 @@ jobs:
       - name: Upload Image
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ needs.detect.outputs.artifact }}
+          name: ${{ steps.meta.outputs.artifact }}
           path: Image
           if-no-files-found: error
           compression-level: 6
@@ -667,7 +674,7 @@ jobs:
   # ==========================================================================
   upload-summary:
     name: "#7 Upload & Summary"
-    needs: [detect, kernelsu, build]
+    needs: build
     if: always()
     runs-on: ubuntu-22.04
     timeout-minutes: 10
@@ -681,10 +688,10 @@ jobs:
             echo "| | |"
             echo "|---|---|"
             echo "| KSU variant | \`${KSU_VAR}\` |"
-            echo "| KernelSU-Next | \`${{ needs.kernelsu.outputs.ksu_tag || 'n/a' }}\` (\`${{ needs.kernelsu.outputs.ksu_code || 'n/a' }}\`) |"
-            echo "| SELinux | \`${{ needs.detect.outputs.selinux }}\` |"
+            echo "| KernelSU-Next | \`${{ needs.build.outputs.ksu_tag || 'n/a' }}\` (\`${{ needs.build.outputs.ksu_code || 'n/a' }}\`) |"
+            echo "| SELinux | \`${{ needs.build.outputs.selinux || env.PERMISSIVE }}\` |"
             echo "| Image | \`${{ needs.build.outputs.image_size || 'n/a' }}\` sha256:\`${{ needs.build.outputs.image_sha || 'n/a' }}\` |"
-            echo "| Artifact | \`${{ needs.detect.outputs.artifact }}\` (only the Image) |"
+            echo "| Artifact | \`${{ needs.build.outputs.artifact || 'n/a' }}\` (only the Image) |"
             echo ""
             echo "Pipeline: #1 ●──● #2 ●──● #3 ●──● #4 ●──● #5 ●──● #6 ●──● #7"
           } >> "$GITHUB_STEP_SUMMARY"
