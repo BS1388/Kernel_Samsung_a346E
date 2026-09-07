@@ -52,10 +52,17 @@ permissions:
   contents: read
   issues: write
 
+# a newer push on the same branch supersedes older, still running builds
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   G_WORKSPACE: ${{ github.workspace }}
   G_EXT: ${{ github.workspace }}/external_deps
-  KSU_VAR: ${{ github.event.inputs.ksu_variant || 'NO-ROOT' }}
+  # workflow_dispatch: whatever the user picked.
+  # push on arena/**: build KSUN (that is the variant we actually flash).
+  KSU_VAR: ${{ github.event.inputs.ksu_variant || (github.event_name == 'push' && 'KSUN') || 'NO-ROOT' }}
   PERMISSIVE: ${{ github.event.inputs.permissive || 'false' }}
   CUSTOM_PATCH: ${{ github.event.inputs.custom_patches || 'false' }}
 
