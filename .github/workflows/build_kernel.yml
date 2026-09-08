@@ -619,6 +619,45 @@ jobs:
           fi
           ls -lh Image
 
+      # ----------------------------------------------------------------------
+      # Publish build errors through the REST API.
+      #
+      # Job logs and artifacts are both served from *.blob.core.windows.net,
+      # which a sandbox driving an automated diagnose/patch/rebuild loop often
+      # cannot reach (the api.github.com host is reachable, the blob host is
+      # not) - `gh run view --log-failed` and `gh run download` both return an
+      # empty body with EOF there. This job already has `issues: write`, so
+      # opening an issue is the one failure channel that works everywhere.
+      # ----------------------------------------------------------------------
+      - name: Publish build errors as an issue (self-healing loop input)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          [ -f build.log ] || { echo "no build.log - nothing to publish"; exit 0; }
+          TITLE="build failure: run ${GITHUB_RUN_ID} (${GITHUB_SHA:0:7})"
+          {
+            echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "Ref: ${GITHUB_REF}   SHA: ${GITHUB_SHA}"
+            echo
+            echo "### matched errors"
+            echo '```'
+            grep -nE "error:|Error [0-9]+|FAILED:|ninja: build stopped|undefined symbol|modpost|ERROR: |died with" \
+              build.log | tail -n 150 || echo "(no error lines matched)"
+            echo '```'
+            echo
+            echo "### tail of build.log"
+            echo '```'
+            tail -n 150 build.log
+            echo '```'
+          } > /tmp/build_failure.md
+          # 65536 char issue body limit
+          head -c 60000 /tmp/build_failure.md > /tmp/build_failure_trim.md
+          gh issue create --title "$TITLE" --body-file /tmp/build_failure_trim.md \
+            --label ci-failure 2>/dev/null \
+          || gh issue create --title "$TITLE" --body-file /tmp/build_failure_trim.md
+
       - name: Upload Image
         uses: actions/upload-artifact@v6
         with:
