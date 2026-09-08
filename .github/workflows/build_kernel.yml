@@ -57,7 +57,6 @@ on:
         type: boolean
         required: true
         default: false
-  push:
     branches:
       - A346E
       - a346E-Stock
