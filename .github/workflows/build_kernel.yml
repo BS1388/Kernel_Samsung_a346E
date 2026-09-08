@@ -17,6 +17,21 @@
 #
 # Variant: workflow_dispatch picks ONE of NO-ROOT / KSUN / KSUN-SUSFS-v1.5.12.
 # A push to arena/** builds KSUN (that is the variant we actually flash).
+#
+# NOTE (KSUN-SUSFS-v1.5.12 only): KernelSU-Next for this variant comes from
+# xnnnsets/KernelSU-Next @ next-1 -- a personal fork that, unlike susfs4ksu,
+# is NOT pinned to a commit (always tracks that branch's current HEAD). If
+# that branch moves, the SUSFS patches below (10_enable_susfs_for_ksu.patch,
+# 50_add_susfs_in_gki-android15-6.6.patch, the fix_*.c.patch set) can stop
+# applying cleanly, and the fork may also lag the upstream KSU_VERSION_FALLBACK
+# Kbuild mechanism (cosmetic: KSU version shows as v0.0.1 in Manager). Patch
+# failures below now fail the build loudly instead of a silent warning --
+# see the APPLIED/ALREADY/BROKEN checks in "SUSFS kernel patches" and
+# "Add KernelSU-Next". To stop the drift at the source, pin the fork once you
+# have a known-good commit:
+#   git -C KernelSU-Next checkout <KNOWN_GOOD_SHA>
+# (find <KNOWN_GOOD_SHA> from a previous successful run's "KernelSU-Next ...@ <sha>"
+# log line in the "Add KernelSU-Next" step).
 ###############################################################################
 name: Build A346E Kernel
 
@@ -362,8 +377,11 @@ jobs:
             echo "ksu_tag=$TAG"; echo "ksu_code=$CODE"; echo "ksu_sha=$SHA"
           } >> "$GITHUB_OUTPUT"
           echo "KernelSU-Next $BRANCH: $TAG ($CODE) @ $SHA"
-          grep -q KSU_VERSION_FALLBACK kernel/Kbuild \
-            || echo "::warning::kernel/Kbuild has no KSU_VERSION_FALLBACK - the v0.0.1 fix may need updating"
+          if grep -q KSU_VERSION_FALLBACK kernel/Kbuild; then
+            echo "KSU_VERSION_FALLBACK: present"
+          else
+            echo "::warning::kernel/Kbuild has no KSU_VERSION_FALLBACK - the v0.0.1 fix may need updating (this fork/branch may predate the upstream Kbuild change; cosmetic only, does not fail the build)"
+          fi
 
       - name: Defconfig plan
         run: |
@@ -459,6 +477,11 @@ jobs:
             dir=$(basename "$repo" .git); [ -d "$dir" ] || git clone "$repo" --depth 1
           done
 
+      # Applies 4 patches to the checked-out kernel tree ($G_KERNEL). Each is
+      # checked APPLIED / ALREADY (harmless, previously-applied) / BROKEN
+      # (real failure -> stop the build instead of a silent warning), since
+      # KernelSU-Next for this variant tracks a moving branch (not pinned)
+      # and can drift out from under these patches -- see header note.
       - name: SUSFS kernel patches
         if: env.KSU_VAR == 'KSUN-SUSFS-v1.5.12'
         run: |
@@ -467,13 +490,24 @@ jobs:
           cp -v "$SUSFS_DIR"/kernel_patches/include/linux/* "$G_KERNEL/include/linux/" || true
           cp -v "$SUSFS_DIR"/kernel_patches/fs/*            "$G_KERNEL/fs/"            || true
           cd "$G_KERNEL"
+          FAIL=0
           for p in "$G_EXT/patch/6.6/Dont_reduce_TTL.patch" \
                    "$G_EXT/kernel_patches/wild/hooks/scope_min_manual_hooks_v1.4.patch" \
                    "$SUSFS_DIR/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch" \
                    "$G_EXT/kernel_patches/wild/susfs_fix_patches/v1.5.12/1_fix_base.c.patch"; do
-            echo "--- $(basename "$p")"
-            patch -p1 --forward --batch < "$p" || echo "::warning::$(basename "$p") failed / already applied"
+            base=$(basename "$p")
+            echo "--- $base"
+            if patch -p1 --forward --batch < "$p" > "/tmp/log_${base}.log" 2>&1; then
+              echo "APPLIED $base"
+            elif grep -q "Reversed (or previously applied)" "/tmp/log_${base}.log"; then
+              echo "ALREADY $base"
+            else
+              echo "::error::BROKEN  $base -- patch no longer matches the kernel tree"
+              cat "/tmp/log_${base}.log"
+              FAIL=1
+            fi
           done
+          [ "$FAIL" = "0" ] || { echo "::error::a SUSFS kernel patch genuinely failed - SUSFS would be silently missing from this build"; exit 1; }
           # GKI protected exports block SUSFS symbols
           grep -rl "protected_exports_list" --include="BUILD.bazel" "$GITHUB_WORKSPACE/$REAL_DIR" 2>/dev/null | while read -r f; do
             sed -i '/"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",\?/d' "$f"
@@ -497,13 +531,26 @@ jobs:
             KSUN-SUSFS-v1.5.12)
               curl -LSs --retry 3 https://raw.githubusercontent.com/xnnnsets/KernelSU-Next/refs/heads/next-1/kernel/setup.sh -o /tmp/ksun_setup.sh
               sh /tmp/ksun_setup.sh next-1
+              # To pin this fork once you have a known-good commit:
+              #   git -C KernelSU-Next checkout <KNOWN_GOOD_SHA>
+              FAIL=0
               for p in "$G_EXT/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
                        "$G_EXT/kernel_patches/wild/susfs_fix_patches/v1.5.12/fix_core_hook.c.patch" \
                        "$G_EXT/kernel_patches/wild/susfs_fix_patches/v1.5.12/fix_sucompat.c.patch" \
                        "$G_EXT/kernel_patches/wild/susfs_fix_patches/v1.5.12/fix_kernel_compat.c.patch"; do
-                echo "--- $(basename "$p")"
-                patch -p1 -d ./KernelSU-Next --forward --batch < "$p" || echo "::warning::$(basename "$p") failed / already applied"
+                base=$(basename "$p")
+                echo "--- $base"
+                if patch -p1 -d ./KernelSU-Next --forward --batch < "$p" > "/tmp/log_${base}.log" 2>&1; then
+                  echo "APPLIED $base"
+                elif grep -q "Reversed (or previously applied)" "/tmp/log_${base}.log"; then
+                  echo "ALREADY $base"
+                else
+                  echo "::error::BROKEN  $base -- patch no longer matches xnnnsets/KernelSU-Next@next-1"
+                  cat "/tmp/log_${base}.log"
+                  FAIL=1
+                fi
               done
+              [ "$FAIL" = "0" ] || { echo "::error::a SUSFS/KernelSU-Next patch genuinely failed"; exit 1; }
               ;;
           esac
           [ -d KernelSU-Next ] || { echo "::error::KernelSU-Next missing after setup.sh"; exit 1; }
@@ -522,7 +569,9 @@ jobs:
             sed -i "s|^KSU_VERSION_TAG_FALLBACK := .*|KSU_VERSION_TAG_FALLBACK := ${KSU_TAG}|" kernel/Kbuild
             grep -n "KSU_VERSION_FALLBACK\|KSU_VERSION_TAG_FALLBACK" kernel/Kbuild
           else
-            echo "::warning::KSU_VERSION_FALLBACK not found in kernel/Kbuild (layout changed?)"
+            echo "::warning::KSU_VERSION_FALLBACK not found in kernel/Kbuild (layout changed, or this fork/branch predates the upstream fix - KSU version may show as v0.0.1 in Manager; does not fail the build)"
+            echo "--- kernel/Kbuild version-related lines (for debugging) ---"
+            [ -f kernel/Kbuild ] && grep -n -i "version" kernel/Kbuild || echo "kernel/Kbuild missing entirely"
           fi
           { echo "KSU_GIT_TAG=$KSU_TAG"; echo "KSU_VERSION=$KSU_CODE"; echo "KSU_COMMIT=$KSU_SHA"; } >> "$GITHUB_ENV"
           { echo "ksu_tag=$KSU_TAG"; echo "ksu_code=$KSU_CODE"; } >> "$GITHUB_OUTPUT"
