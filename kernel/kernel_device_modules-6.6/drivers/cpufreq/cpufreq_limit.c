@@ -530,7 +530,12 @@ static void cpufreq_limit_perf_hardlock_locked(void)
 	unsigned int id;
 
 	for (id = 0; id < DVFS_MAX_ID; id++) {
-		if (IS_ERR_OR_NULL(&min_req[id][param.ltl_cpu_start]))
+		/*
+		 * Check the base pointer, not &req[id][cpu]: taking the address
+		 * of an element of a NULL array yields NULL + offset, which
+		 * IS_ERR_OR_NULL() would happily pass through.
+		 */
+		if (IS_ERR_OR_NULL(min_req[id]) || IS_ERR_OR_NULL(max_req[id]))
 			continue;
 
 		freq_qos_update_request(&min_req[id][param.ltl_cpu_start],
@@ -556,9 +561,9 @@ static void cpufreq_limit_perf_release_locked(void)
 	int i;
 
 	for (id = 0; id < DVFS_MAX_ID; id++) {
+		if (IS_ERR_OR_NULL(min_req[id]) || IS_ERR_OR_NULL(max_req[id]))
+			continue;
 		for_each_possible_cpu(i) {
-			if (IS_ERR_OR_NULL(&min_req[id][i]))
-				continue;
 			freq_qos_update_request(&min_req[id][i],
 						FREQ_QOS_MIN_DEFAULT_VALUE);
 			freq_qos_update_request(&max_req[id][i],
