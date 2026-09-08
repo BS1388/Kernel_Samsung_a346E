@@ -29,7 +29,9 @@
 #include <linux/kobject.h>
 #include <linux/cpufreq.h>
 #include <linux/cpufreq_limit.h>
+#include <linux/notifier.h>
 #include <linux/platform_device.h>
+#include <linux/thermal.h>
 #if IS_ENABLED(CONFIG_OF)
 #include <linux/of.h>
 #endif
@@ -508,6 +510,85 @@ static void cpufreq_limit_process_max_freq(unsigned int id, int max_freq)
 	}
 	cpufreq_limit_process_over_limit(id, need_update_user_max, new_user_max);
 }
+/* --------------------------------------------------------------------- *
+ * Performance-profile hard lock
+ *
+ * param.l_fmax / param.b_fmax are the highest entries of the real hardware
+ * frequency tables for the little and big clusters, so driving min_freq to
+ * those values and releasing every max cap pins each cluster to its own
+ * absolute maximum. (min and max end up identical per policy, which is what
+ * "hard-lock to peak" means on a per-cluster freq table.)
+ *
+ * This is reached from two places:
+ *   - _set_freq_limit(), so any thermal/boost caller re-asserts the lock
+ *     instead of overriding it;
+ *   - the thermal_perf_gate notifier, so engaging the gate locks immediately
+ *     and disengaging it releases immediately, with no reboot.
+ * --------------------------------------------------------------------- */
+static void cpufreq_limit_perf_hardlock_locked(void)
+{
+	unsigned int id;
+
+	for (id = 0; id < DVFS_MAX_ID; id++) {
+		if (IS_ERR_OR_NULL(&min_req[id][param.ltl_cpu_start]))
+			continue;
+
+		freq_qos_update_request(&min_req[id][param.ltl_cpu_start],
+					param.l_fmax);
+		freq_qos_update_request(&min_req[id][param.big_cpu_start],
+					param.b_fmax);
+		freq_qos_update_request(&max_req[id][param.ltl_cpu_start],
+					FREQ_QOS_MAX_DEFAULT_VALUE);
+		freq_qos_update_request(&max_req[id][param.big_cpu_start],
+					FREQ_QOS_MAX_DEFAULT_VALUE);
+
+		freq_input[id].min = param.l_fmax;
+		freq_input[id].max = LIMIT_RELEASE;
+	}
+
+	pr_info("%s: hard-locked little=%u big=%u (gate engaged)\n",
+		__func__, param.l_fmax, param.b_fmax);
+}
+
+static void cpufreq_limit_perf_release_locked(void)
+{
+	unsigned int id;
+	int i;
+
+	for (id = 0; id < DVFS_MAX_ID; id++) {
+		for_each_possible_cpu(i) {
+			if (IS_ERR_OR_NULL(&min_req[id][i]))
+				continue;
+			freq_qos_update_request(&min_req[id][i],
+						FREQ_QOS_MIN_DEFAULT_VALUE);
+			freq_qos_update_request(&max_req[id][i],
+						FREQ_QOS_MAX_DEFAULT_VALUE);
+		}
+		freq_input[id].min = 0;
+		freq_input[id].max = 0;
+	}
+
+	pr_info("%s: all DVFS limits released (gate disengaged)\n", __func__);
+}
+
+static int cpufreq_limit_perf_gate_notify(struct notifier_block *nb,
+					  unsigned long action, void *data)
+{
+	mutex_lock(&cpufreq_limit_mutex);
+	if (action)
+		cpufreq_limit_perf_hardlock_locked();
+	else
+		cpufreq_limit_perf_release_locked();
+	cpufreq_limit_update_current_freq();
+	mutex_unlock(&cpufreq_limit_mutex);
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block cpufreq_limit_perf_gate_nb = {
+	.notifier_call = cpufreq_limit_perf_gate_notify,
+};
+
 /**
  * _set_freq_limit - core function to request frequencies
  * @id			request id
@@ -520,6 +601,20 @@ static int _set_freq_limit(unsigned int id, int min_freq, int max_freq)
 		__func__, id, min_freq, max_freq);
 
 	mutex_lock(&cpufreq_limit_mutex);
+
+	/*
+	 * Performance-profile gate: ignore whatever the caller (thermal
+	 * mitigation, touch/finger boost, userspace maxlock) asked for and
+	 * re-assert the hard lock on both clusters. Callers are left
+	 * untouched otherwise, so disengaging the gate restores exactly the
+	 * stock behaviour without a reboot.
+	 */
+	if (thermal_perf_gate_enabled()) {
+		cpufreq_limit_perf_hardlock_locked();
+		cpufreq_limit_update_current_freq();
+		mutex_unlock(&cpufreq_limit_mutex);
+		return 0;
+	}
 
 	if (min_freq != 0)
 		cpufreq_limit_process_min_freq(id, min_freq);
@@ -988,6 +1083,20 @@ int cpufreq_limit_probe(struct platform_device *pdev)
 		goto probe_failed;
 	}
 
+	ret = thermal_perf_gate_register_notifier(&cpufreq_limit_perf_gate_nb);
+	if (ret) {
+		pr_err("%s: register thermal_perf_gate notifier failed %d\n",
+			__func__, ret);
+		goto probe_failed;
+	}
+
+	/* Late probe: the gate may already have been engaged before we were up. */
+	if (thermal_perf_gate_enabled()) {
+		mutex_lock(&cpufreq_limit_mutex);
+		cpufreq_limit_perf_hardlock_locked();
+		mutex_unlock(&cpufreq_limit_mutex);
+	}
+
 	pr_info("%s: done\n", __func__);
 
 probe_failed:
@@ -998,6 +1107,8 @@ static int cpufreq_limit_remove(struct platform_device *pdev)
 {
 	int i = 0, j;
 	int ret = 0;
+
+	thermal_perf_gate_unregister_notifier(&cpufreq_limit_perf_gate_nb);
 
 	pr_info("%s: start\n", __func__);
 

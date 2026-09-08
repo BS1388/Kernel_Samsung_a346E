@@ -14,7 +14,9 @@
  * ===============================================
  */
 #include <linux/mutex.h>
+#include <linux/notifier.h>
 #include <linux/random.h>
+#include <linux/thermal.h>
 
 #include <gpufreq_v2_legacy.h>
 #include <gpuppm_legacy.h>
@@ -38,6 +40,58 @@ static void __gpuppm_update_gpuppm_info(void);
  * ===============================================
  */
 static DEFINE_MUTEX(gpuppm_lock);
+
+/*
+ * Performance-profile gate: limiters whose ceiling/floor are neutralised while
+ * the gate is engaged.
+ *
+ * Deliberately EXCLUDED from this list, so they keep working exactly as stock
+ * (battery and SRAM-retention protection must never be disabled):
+ *   LIMIT_BATT_OC, LIMIT_BATT_PERCENT, LIMIT_LOW_BATT, LIMIT_SRAMRC
+ */
+static bool gpuppm_gate_neutralized(enum gpuppm_limiter limiter)
+{
+	if (!thermal_perf_gate_enabled())
+		return false;
+
+	switch (limiter) {
+	case LIMIT_THERMAL_AP:
+	case LIMIT_THERMAL_EB:
+	case LIMIT_PBM:
+		return true;
+	default:
+		return false;
+	}
+}
+
+/*
+ * Pin the GPU to its highest OPP (oppidx 0) while the gate is engaged.
+ *
+ * __gpuppm_sort_limit() skips any limiter whose ceiling == max_oppidx (0), so
+ * writing 0 into the thermal/PBM ceilings makes them impose no cap at all -
+ * and because the sort takes the LARGEST remaining ceiling, a battery limiter
+ * still wins whenever it asks for one. Battery protection is unaffected.
+ *
+ * The sort takes the SMALLEST floor, so writing 0 into the floor makes it the
+ * winner and collapses the clock bounds onto the maximum frequency entry.
+ */
+static void gpuppm_gate_force_peak(enum gpufreq_target target,
+	struct gpuppm_limit_info *limit_table, int opp_num, bool apply)
+{
+	if (opp_num <= 0)
+		return;
+
+	limit_table[LIMIT_THERMAL_AP].ceiling = 0;
+	limit_table[LIMIT_THERMAL_AP].floor = 0;
+	limit_table[LIMIT_THERMAL_EB].ceiling = 0;
+	limit_table[LIMIT_THERMAL_EB].floor = 0;
+	limit_table[LIMIT_PBM].ceiling = 0;
+	limit_table[LIMIT_PBM].floor = 0;
+
+	__gpuppm_sort_limit(target);
+	if (apply)
+		__gpuppm_limit_effective(target);
+}
 static struct gpuppm_status g_ppm;
 static unsigned int g_gpueb_support;
 static unsigned int g_stress_test;
@@ -555,6 +609,23 @@ int gpuppm_set_limit(enum gpufreq_target target, enum gpuppm_limiter limiter,
 
 	mutex_lock(&gpuppm_lock);
 
+	/*
+	 * Performance-profile gate: a limit request coming from the thermal or
+	 * power-budget limiters is discarded and the GPU is re-pinned to peak.
+	 * Any other limiter (battery OC / battery percent / low battery /
+	 * SRAMRC / powerhal / ...) still runs the normal path, and re-asserts
+	 * the peak pin first so the thermal entries cannot creep back in.
+	 */
+	if (thermal_perf_gate_enabled()) {
+		if (gpuppm_gate_neutralized(limiter)) {
+			gpuppm_gate_force_peak(target, limit_table, opp_num,
+						instant_dvfs);
+			mutex_unlock(&gpuppm_lock);
+			goto done;
+		}
+		gpuppm_gate_force_peak(target, limit_table, opp_num, false);
+	}
+
 	/* convert input limit info to OPP index */
 	ret = __gpuppm_convert_limit_to_idx(target, limiter,
 		ceiling_info, floor_info, &ceiling_idx, &floor_idx);
@@ -766,12 +837,70 @@ void gpuppm_set_shared_status(struct gpufreq_shared_status *shared_status)
 	mutex_unlock(&gpuppm_lock);
 }
 
+/*
+ * Restore the neutralised limiters to GPUPPM_DEFAULT_IDX, which is what
+ * gpuppm_set_limit() writes for a GPUPPM_RESET_IDX request - done inline
+ * because gpuppm_set_limit() takes gpuppm_lock and the caller holds it.
+ */
+static void gpuppm_gate_release(struct gpuppm_limit_info *limit_table)
+{
+	limit_table[LIMIT_THERMAL_AP].ceiling = GPUPPM_DEFAULT_IDX;
+	limit_table[LIMIT_THERMAL_AP].floor = GPUPPM_DEFAULT_IDX;
+	limit_table[LIMIT_THERMAL_EB].ceiling = GPUPPM_DEFAULT_IDX;
+	limit_table[LIMIT_THERMAL_EB].floor = GPUPPM_DEFAULT_IDX;
+	limit_table[LIMIT_PBM].ceiling = GPUPPM_DEFAULT_IDX;
+	limit_table[LIMIT_PBM].floor = GPUPPM_DEFAULT_IDX;
+}
+
+static int gpuppm_gate_notify(struct notifier_block *nb, unsigned long action,
+	void *data)
+{
+	mutex_lock(&gpuppm_lock);
+
+	if (action) {
+		gpuppm_gate_force_peak(TARGET_GPU, g_gpu_limit_table,
+					g_gpu.opp_num, true);
+		if (g_stack.opp_num > 0)
+			gpuppm_gate_force_peak(TARGET_STACK, g_stack_limit_table,
+						g_stack.opp_num, true);
+		GPUFREQ_LOGI("[GATE] GPU DVFS pinned to peak OPP");
+	} else {
+		gpuppm_gate_release(g_gpu_limit_table);
+		if (g_stack.opp_num > 0)
+			gpuppm_gate_release(g_stack_limit_table);
+		__gpuppm_sort_limit(TARGET_GPU);
+		__gpuppm_limit_effective(TARGET_GPU);
+		if (g_stack.opp_num > 0) {
+			__gpuppm_sort_limit(TARGET_STACK);
+			__gpuppm_limit_effective(TARGET_STACK);
+		}
+		GPUFREQ_LOGI("[GATE] GPU DVFS limits released");
+	}
+
+	mutex_unlock(&gpuppm_lock);
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block gpuppm_gate_nb = {
+	.notifier_call = gpuppm_gate_notify,
+};
+static bool gpuppm_gate_nb_registered;
+
 int gpuppm_init(enum gpufreq_target target, unsigned int gpueb_support)
 {
 	int max_oppidx = 0, min_oppidx = 0, opp_num = 0;
 	int ret = GPUFREQ_SUCCESS;
 
 	g_gpueb_support = gpueb_support;
+
+	if (!gpueb_support && !gpuppm_gate_nb_registered) {
+		if (thermal_perf_gate_register_notifier(&gpuppm_gate_nb) == 0)
+			gpuppm_gate_nb_registered = true;
+		else
+			GPUFREQ_LOGE("failed to register thermal_perf_gate notifier");
+	}
+
 
 	if (g_gpueb_support)
 		gpufreq_register_gpuppm_fp(&platform_eb_fp);

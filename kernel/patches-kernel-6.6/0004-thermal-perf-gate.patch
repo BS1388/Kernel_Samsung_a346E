@@ -1,0 +1,413 @@
+diff --git a/drivers/thermal/Makefile b/drivers/thermal/Makefile
+index c934cab30..f2e9e856a 100644
+--- a/drivers/thermal/Makefile
++++ b/drivers/thermal/Makefile
+@@ -6,6 +6,7 @@ CFLAGS_thermal_core.o		:= -I$(src)
+ obj-$(CONFIG_THERMAL)		+= thermal_sys.o
+ thermal_sys-y			+= thermal_core.o thermal_sysfs.o
+ thermal_sys-y			+= thermal_trip.o thermal_helpers.o
++thermal_sys-y			+= thermal_perf_gate.o
+ 
+ # netlink interface to manage the thermal framework
+ thermal_sys-$(CONFIG_THERMAL_NETLINK)		+= thermal_netlink.o
+diff --git a/drivers/thermal/gov_power_allocator.c b/drivers/thermal/gov_power_allocator.c
+index f883bb8aa..d8693603a 100644
+--- a/drivers/thermal/gov_power_allocator.c
++++ b/drivers/thermal/gov_power_allocator.c
+@@ -720,6 +720,20 @@ static int power_allocator_throttle(struct thermal_zone_device *tz, int trip_id)
+ 	if (trip_id != params->trip_max_desired_temperature)
+ 		return 0;
+ 
++	/*
++	 * Performance-profile gate: the IPA/PID power budget is bypassed
++	 * entirely and every power actor is released to its maximum.
++	 * tz->passive is cleared so the zone stops polling at the passive
++	 * delay and the PID integral does not wind up behind our back.
++	 */
++	if (thermal_perf_gate_enabled()) {
++		update = tz->passive;
++		tz->passive = 0;
++		reset_pid_controller(params);
++		allow_maximum_power(tz, update);
++		return 0;
++	}
++
+ 	ret = __thermal_zone_get_trip(tz, params->trip_switch_on, &trip);
+ 	if (!ret && (tz->temperature < trip.temperature)) {
+ 		update = tz->passive;
+diff --git a/drivers/thermal/gov_step_wise.c b/drivers/thermal/gov_step_wise.c
+index 849dc1ec8..50bcc9b51 100644
+--- a/drivers/thermal/gov_step_wise.c
++++ b/drivers/thermal/gov_step_wise.c
+@@ -34,6 +34,15 @@ static unsigned long get_target_state(struct thermal_instance *instance,
+ 	unsigned long cur_state;
+ 	unsigned long next_target;
+ 
++	/*
++	 * Performance-profile gate: evaluate zero thermal mitigation steps.
++	 * The instance is parked at its least-restrictive state, which keeps
++	 * the passive-instance accounting in thermal_zone_trip_update()
++	 * consistent while guaranteeing no throttling is ever requested.
++	 */
++	if (thermal_perf_gate_blocked(cdev->type))
++		return instance->lower;
++
+ 	/*
+ 	 * We keep this instance the way it is by default.
+ 	 * Otherwise, we use the current state of the
+diff --git a/drivers/thermal/thermal_helpers.c b/drivers/thermal/thermal_helpers.c
+index 6fdfa7090..18101b049 100644
+--- a/drivers/thermal/thermal_helpers.c
++++ b/drivers/thermal/thermal_helpers.c
+@@ -155,6 +155,21 @@ EXPORT_SYMBOL_GPL(thermal_zone_get_temp);
+ static void thermal_cdev_set_cur_state(struct thermal_cooling_device *cdev,
+ 				       int target)
+ {
++	/*
++	 * Performance-profile gate. This is the single point at which a
++	 * governor's mitigation request reaches a cooling device, so clamping
++	 * the target here neutralises every governor (step_wise,
++	 * power_allocator, fair_share, bang_bang, userspace) at once.
++	 *
++	 * The target is clamped to the least-restrictive state rather than
++	 * dropped, so the cooling device is actively driven back to full
++	 * performance and the cdev stats/updated bookkeeping stays consistent.
++	 * Cooling devices on the safety allowlist (battery charge throttling,
++	 * thermal shutdown, system reset) are passed through untouched.
++	 */
++	if (target && thermal_perf_gate_blocked(cdev->type))
++		target = 0;
++
+ 	if (cdev->ops->set_cur_state(cdev, target))
+ 		return;
+ 
+diff --git a/drivers/thermal/thermal_perf_gate.c b/drivers/thermal/thermal_perf_gate.c
+new file mode 100644
+index 000000000..9d69733da
+--- /dev/null
++++ b/drivers/thermal/thermal_perf_gate.c
+@@ -0,0 +1,284 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * thermal_perf_gate.c - Performance-profile gate for the thermal framework.
++ *
++ * What this is
++ * ------------
++ * A single, runtime-switchable gate that suppresses *software* thermal
++ * mitigation. When engaged, every cooling-device state request that a governor
++ * produces is clamped to the least-restrictive state (state 0) before it can
++ * reach hardware, so no frequency cap, no current throttle and no backlight
++ * reduction is ever applied by the thermal framework.
++ *
++ * What this is NOT
++ * ----------------
++ * It is not a way to remove hardware protection. The LVTS thermal controllers
++ * programmed by the SoC thermal driver keep their stage-3 hardware
++ * reboot threshold (on MT6877 that is the CPU zone's trip_temp[0], 117 degC),
++ * and the cooling devices on the safety allowlist below keep working in full:
++ *
++ *   mtk-cl-bcctNN      battery charge-current throttling (BCCT)
++ *   mtk-cl-shutdownNN  orderly thermal shutdown
++ *   mtk-cl-kshutdownNN kernel thermal shutdown
++ *   *-sysrst           system reset on over-temperature
++ *   anything matching "charger" / "batt"
++ *
++ * Battery, charger and PMIC protection therefore stays intact, which is the
++ * whole point of keeping the allowlist.
++ *
++ * Interface
++ * ---------
++ *   /sys/kernel/thermal_perf/enabled        0 = stock behaviour, 1 = gated
++ *   /sys/kernel/thermal_perf/allow_extra    append a cooling-device name
++ *                                           substring to the allowlist
++ *   /sys/kernel/thermal_perf/allow_list     show the active allowlist
++ *   /sys/kernel/thermal_perf/stats          suppression counters
++ *
++ * Default is 0 (stock). Nothing changes until userspace asks for it.
++ */
++
++#include <linux/kernel.h>
++#include <linux/kobject.h>
++#include <linux/mutex.h>
++#include <linux/printk.h>
++#include <linux/ratelimit.h>
++#include <linux/slab.h>
++#include <linux/spinlock.h>
++#include <linux/string.h>
++#include <linux/sysfs.h>
++#include <linux/thermal.h>
++
++#define TPG_NAME_LEN	24
++#define TPG_MAX_EXTRA	16
++
++static bool tpg_enabled;
++
++static DEFINE_SPINLOCK(tpg_lock);
++static char tpg_extra[TPG_MAX_EXTRA][TPG_NAME_LEN];
++static int tpg_nextra;
++
++static u64 tpg_suppressed;
++static u64 tpg_allowed;
++
++/*
++ * Notifier chain fired when the gate is engaged or disengaged, so that
++ * out-of-tree/vendor consumers (MTK cpufreq limit driver, gpufreq, GED, Mali
++ * devfreq) can lock or release their frequency bounds in response to the same
++ * event instead of polling.
++ */
++static ATOMIC_NOTIFIER_HEAD(tpg_chain);
++
++int thermal_perf_gate_register_notifier(struct notifier_block *nb)
++{
++	return atomic_notifier_chain_register(&tpg_chain, nb);
++}
++EXPORT_SYMBOL_GPL(thermal_perf_gate_register_notifier);
++
++int thermal_perf_gate_unregister_notifier(struct notifier_block *nb)
++{
++	return atomic_notifier_chain_unregister(&tpg_chain, nb);
++}
++EXPORT_SYMBOL_GPL(thermal_perf_gate_unregister_notifier);
++
++/*
++ * Cooling devices that must keep working even with the gate engaged. Matched
++ * with strstr() against the cooling device "type" string, so the numeric
++ * suffixes ("mtk-cl-bcct02") do not matter.
++ */
++static const char * const tpg_safety[] = {
++	"bcct",		/* battery charge current throttling */
++	"charger",
++	"batt",
++	"shutdown",
++	"kshutdown",
++	"sysrst",
++	NULL
++};
++
++static bool tpg_type_allowed(const char *type)
++{
++	const char * const *s;
++	int i;
++
++	if (!type)
++		return false;
++
++	for (s = tpg_safety; *s; s++)
++		if (strstr(type, *s))
++			return true;
++
++	for (i = 0; i < tpg_nextra; i++)
++		if (strstr(type, tpg_extra[i]))
++			return true;
++
++	return false;
++}
++
++/**
++ * thermal_perf_gate_enabled - is the performance profile engaged?
++ *
++ * Fast, lock-free read. Vendor modules (MTK cpufreq, gpufreq, GED, Mali)
++ * consult this to decide whether to ignore their own DVFS power budgets.
++ */
++bool thermal_perf_gate_enabled(void)
++{
++	return READ_ONCE(tpg_enabled);
++}
++EXPORT_SYMBOL_GPL(thermal_perf_gate_enabled);
++
++/**
++ * thermal_perf_gate_blocked - should mitigation for @cdev_type be suppressed?
++ * @cdev_type: cooling device type string
++ *
++ * Returns true when the gate is engaged AND the cooling device is not on the
++ * safety allowlist. Never blocks when the gate is disengaged.
++ */
++bool thermal_perf_gate_blocked(const char *cdev_type)
++{
++	unsigned long flags;
++	bool blocked;
++
++	if (!READ_ONCE(tpg_enabled))
++		return false;
++
++	spin_lock_irqsave(&tpg_lock, flags);
++	blocked = !tpg_type_allowed(cdev_type);
++	if (blocked)
++		tpg_suppressed++;
++	else
++		tpg_allowed++;
++	spin_unlock_irqrestore(&tpg_lock, flags);
++
++	return blocked;
++}
++EXPORT_SYMBOL_GPL(thermal_perf_gate_blocked);
++
++/* ------------------------------------------------------------------ sysfs */
++
++static struct kobject *tpg_kobj;
++
++static ssize_t enabled_show(struct kobject *kobj, struct kobj_attribute *attr,
++			    char *buf)
++{
++	return sysfs_emit(buf, "%d\n", READ_ONCE(tpg_enabled) ? 1 : 0);
++}
++
++static ssize_t enabled_store(struct kobject *kobj, struct kobj_attribute *attr,
++			     const char *buf, size_t count)
++{
++	bool val;
++	int ret;
++
++	ret = kstrtobool(buf, &val);
++	if (ret)
++		return ret;
++
++	WRITE_ONCE(tpg_enabled, val);
++	pr_info("thermal_perf_gate: software thermal mitigation %s\n",
++		val ? "SUPPRESSED (performance profile engaged)"
++		    : "restored (stock behaviour)");
++
++	atomic_notifier_call_chain(&tpg_chain, val ? 1 : 0, NULL);
++
++	return count;
++}
++
++static ssize_t allow_list_show(struct kobject *kobj,
++			       struct kobj_attribute *attr, char *buf)
++{
++	const char * const *s;
++	unsigned long flags;
++	ssize_t len = 0;
++	int i;
++
++	len += sysfs_emit_at(buf, len, "builtin:");
++	for (s = tpg_safety; *s; s++)
++		len += sysfs_emit_at(buf, len, " %s", *s);
++	len += sysfs_emit_at(buf, len, "\n");
++
++	len += sysfs_emit_at(buf, len, "extra:  ");
++	spin_lock_irqsave(&tpg_lock, flags);
++	for (i = 0; i < tpg_nextra; i++)
++		len += sysfs_emit_at(buf, len, " %s", tpg_extra[i]);
++	spin_unlock_irqrestore(&tpg_lock, flags);
++	len += sysfs_emit_at(buf, len, "\n");
++
++	return len;
++}
++
++static ssize_t allow_extra_store(struct kobject *kobj,
++				 struct kobj_attribute *attr, const char *buf,
++				 size_t count)
++{
++	size_t len = count;
++	unsigned long flags;
++
++	if (len >= TPG_NAME_LEN)
++		return -EINVAL;
++
++	spin_lock_irqsave(&tpg_lock, flags);
++	if (tpg_nextra >= TPG_MAX_EXTRA) {
++		spin_unlock_irqrestore(&tpg_lock, flags);
++		return -ENOSPC;
++	}
++	memcpy(tpg_extra[tpg_nextra], buf, len);
++	tpg_extra[tpg_nextra][len] = '\0';
++	if (len && tpg_extra[tpg_nextra][len - 1] == '\n')
++		tpg_extra[tpg_nextra][len - 1] = '\0';
++	tpg_nextra++;
++	spin_unlock_irqrestore(&tpg_lock, flags);
++
++	return count;
++}
++
++static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
++			  char *buf)
++{
++	unsigned long flags;
++	u64 sup, alw;
++	int n;
++
++	spin_lock_irqsave(&tpg_lock, flags);
++	sup = tpg_suppressed;
++	alw = tpg_allowed;
++	n = tpg_nextra;
++	spin_unlock_irqrestore(&tpg_lock, flags);
++
++	return sysfs_emit(buf, "enabled=%d suppressed=%llu allowed=%llu extra=%d\n",
++			  READ_ONCE(tpg_enabled) ? 1 : 0, sup, alw, n);
++}
++
++static struct kobj_attribute tpg_attr_enabled =
++	__ATTR(enabled, 0644, enabled_show, enabled_store);
++static struct kobj_attribute tpg_attr_allow_list =
++	__ATTR(allow_list, 0444, allow_list_show, NULL);
++static struct kobj_attribute tpg_attr_allow_extra =
++	__ATTR(allow_extra, 0200, NULL, allow_extra_store);
++static struct kobj_attribute tpg_attr_stats =
++	__ATTR(stats, 0444, stats_show, NULL);
++
++static struct attribute *tpg_attrs[] = {
++	&tpg_attr_enabled.attr,
++	&tpg_attr_allow_list.attr,
++	&tpg_attr_allow_extra.attr,
++	&tpg_attr_stats.attr,
++	NULL
++};
++ATTRIBUTE_GROUPS(tpg);
++
++static int __init thermal_perf_gate_init(void)
++{
++	tpg_kobj = kobject_create_and_add("thermal_perf", kernel_kobj);
++	if (!tpg_kobj)
++		return -ENOMEM;
++
++	if (sysfs_create_groups(tpg_kobj, tpg_groups)) {
++		kobject_put(tpg_kobj);
++		tpg_kobj = NULL;
++		return -ENOMEM;
++	}
++
++	pr_info("thermal_perf_gate: registered /sys/kernel/thermal_perf (disabled)\n");
++	return 0;
++}
++postcore_initcall(thermal_perf_gate_init);
+diff --git a/include/linux/thermal.h b/include/linux/thermal.h
+index 2b25979ec..e20960467 100644
+--- a/include/linux/thermal.h
++++ b/include/linux/thermal.h
+@@ -370,6 +370,20 @@ int thermal_zone_get_offset(struct thermal_zone_device *tz);
+ int thermal_zone_device_enable(struct thermal_zone_device *tz);
+ int thermal_zone_device_disable(struct thermal_zone_device *tz);
+ void thermal_zone_device_critical(struct thermal_zone_device *tz);
++
++/*
++ * Performance-profile gate (drivers/thermal/thermal_perf_gate.c).
++ *
++ * When engaged, governor-driven software thermal mitigation is suppressed:
++ * cooling-device state requests are clamped to their least-restrictive state.
++ * Cooling devices on the gate's safety allowlist (battery charge-current
++ * throttling, thermal shutdown, system reset, charger) always keep working,
++ * and the SoC's hardware emergency-shutdown threshold is never touched.
++ */
++bool thermal_perf_gate_enabled(void);
++bool thermal_perf_gate_blocked(const char *cdev_type);
++int thermal_perf_gate_register_notifier(struct notifier_block *nb);
++int thermal_perf_gate_unregister_notifier(struct notifier_block *nb);
+ #else
+ static inline struct thermal_zone_device *thermal_zone_device_register_with_trips(
+ 					const char *type,
+@@ -444,6 +458,14 @@ static inline int thermal_zone_device_enable(struct thermal_zone_device *tz)
+ 
+ static inline int thermal_zone_device_disable(struct thermal_zone_device *tz)
+ { return -ENODEV; }
++
++static inline bool thermal_perf_gate_enabled(void) { return false; }
++static inline bool thermal_perf_gate_blocked(const char *cdev_type)
++{ return false; }
++static inline int thermal_perf_gate_register_notifier(struct notifier_block *nb)
++{ return -ENOSYS; }
++static inline int thermal_perf_gate_unregister_notifier(struct notifier_block *nb)
++{ return -ENOSYS; }
+ #endif /* CONFIG_THERMAL */
+ 
+ #endif /* __THERMAL_H__ */
