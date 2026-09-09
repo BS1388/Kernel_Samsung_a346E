@@ -114,6 +114,37 @@ chkp "step_wise: وقتی گیت فعال است instance->lower برمی‌گر
 chkp "step_wise: شرط thermal_perf_gate_blocked" 'thermal_perf_gate_blocked\(cdev->type\)'
 chkp "power_allocator: صدا زدن allow_maximum_power()" '^\+[[:space:]][[:space:]]allow_maximum_power\(tz, update\);'
 chkp "power_allocator: صدا زدن reset_pid_controller()" '^\+[[:space:]][[:space:]]reset_pid_controller\(params\);'
+chkp "power_allocator: بای‌پس IPA «بی‌قید» است (thermal_off، نه enabled)" \
+     '^\+[[:space:]]if \(thermal_perf_gate_thermal_off\(\)\) \{'
+# هانک IPA باید *هیچ* شرط مشروط‌به‌حالت‑پرفورمنس نداشته باشد
+IPA_HUNK=$(awk '/^\+\+\+ b\/drivers\/thermal\/gov_power_allocator\.c/{f=1;next} /^\+\+\+ b\//{f=0} f' "$PATCH")
+if printf '%s\n' "$IPA_HUNK" | grep -qE '^\+.*thermal_perf_gate_enabled\(\)'; then
+  bad "power_allocator: هنوز شرط مشروط thermal_perf_gate_enabled() دارد"
+else
+  ok "power_allocator: هیچ شرط مشروط thermal_perf_gate_enabled() باقی نمانده"
+fi
+
+# -----------------------------------------------------------------------------
+sec "3b) جامعیت: همهٔ مسیرهای actuation در فریمورک حرارتی GKI بسته‌اند"
+THERM="$GKI/drivers/thermal"
+N_CALLS=$(grep -rn 'ops->set_cur_state(' "$THERM"/*.c 2>/dev/null | wc -l)
+if [ "$N_CALLS" -eq 2 ]; then
+  ok "فقط ۲ فراخوانی ops->set_cur_state() در کل فریمورک حرارتی GKI وجود دارد"
+else
+  bad "تعداد فراخوانی‌های ops->set_cur_state() = $N_CALLS (انتظار ۲)"
+fi
+chkp "مورد ۱: thermal_helpers.c بعد از clamp گیت است" \
+     '^\+[[:space:]]if \(target && thermal_perf_gate_blocked\(cdev->type\)\)'
+chkp "مورد ۲: thermal_sysfs.c cur_state_store هم گیت شده" \
+     '^\+[[:space:]]if \(state && thermal_perf_gate_blocked\(cdev->type\)\)'
+for g in gov_step_wise gov_bang_bang gov_fair_share gov_power_allocator; do
+  if grep -qE '__thermal_cdev_update|thermal_cdev_update' "$THERM/$g.c" 2>/dev/null; then
+    ok "$g تنها از راه thermal_cdev_update() به cooling device می‌رسد (→ گیت)"
+  else
+    bad "$g مسیر مستقیم دیگری دارد"
+  fi
+done
+absc "gov_user_space هیچ actuator‌ای ندارد (فقط uevent)" "$THERM/gov_user_space.c" 'set_cur_state'
 
 # -----------------------------------------------------------------------------
 sec "4) thermal_helpers.c — نقطهٔ گلوگاه همهٔ cooling deviceها"
@@ -237,7 +268,6 @@ chkp "EXPORT_SYMBOL_GPL(thermal_perf_gate_thermal_off)" '^\+EXPORT_SYMBOL_GPL\(t
 chkp "thermal.h اعلان thermal_off را دارد" '^\+bool thermal_perf_gate_thermal_off\(void\);'
 chkp "stats وضعیت دائمی را نشان می‌دهد" 'thermal=off\(permanent\)'
 # مهم: blocked() دیگر نباید به tpg_enabled نگاه کند
-BLK=$(awk '/^bool thermal_perf_gate_blocked/,/^}/' /tmp/_gate_blk.c 2>/dev/null)
 if sed -n '/^\+\+\+ b\/drivers\/thermal\/thermal_perf_gate.c/,/^diff --git/p' "$PATCH" \
    | awk '/^\+bool thermal_perf_gate_blocked/,/^\+}/' \
    | grep -q 'tpg_enabled'; then
@@ -264,6 +294,42 @@ chk "پین روی سقف هنوز مشروط به perf mode است" "$GPUP" '^[
 
 echo "  --- قفل CPU باید مشروط بماند ---"
 chk "cpufreq_limit همچنان مشروط به thermal_perf_gate_enabled است" "$CPUF" 'if \(thermal_perf_gate_enabled\(\)\) \{'
+
+sec "8f) مسیرهایی که اصلاً برای mt6877 کامپایل نمی‌شوند (شاهد منفی)"
+MALIMK="$VEND/drivers/gpu/mediatek/gpu_mali/mali_avalon/mali-r49p1/drivers/gpu/arm/midgard/Makefile"
+GEDC="$VEND/drivers/gpu/mediatek/ged/src/ged_dvfs.c"
+GPUF="$VEND/drivers/gpu/mediatek/gpufreq/v2_legacy/gpufreq_mt6877.c"
+OVL="$VEND/kernel/configs/mt6877_overlay.config"
+
+echo "  --- Mali kbase devfreq / IPA ---"
+absc "Makefile مالِ Mali هیچ بلوکی برای mt6877 ندارد" "$MALIMK" 'mt6877'
+N=$(grep -cE 'CONFIG_MALI_DEVFREQ := y' "$MALIMK")
+[ "$N" -eq 4 ] && ok "CONFIG_MALI_DEVFREQ := y فقط ۴ بار (mt6768/mt6897/mt6989/mt6991)" \
+               || bad "تعداد CONFIG_MALI_DEVFREQ := y = $N، انتظار ۴"
+chk "ipa/Kbuild فقط وقتی DEVFREQ=y *و* DEVFREQ_THERMAL=y include می‌شود" "$MALIMK" \
+    '^[[:space:]]+ifeq \(\$\(CONFIG_DEVFREQ_THERMAL\),y\)'
+chk "mali_kbase_devfreq.o فقط زیر CONFIG_MALI_DEVFREQ ساخته می‌شود" \
+    "$VEND/drivers/gpu/mediatek/gpu_mali/mali_avalon/mali-r49p1/drivers/gpu/arm/midgard/backend/gpu/Kbuild" \
+    'mali_kbase-\$\(CONFIG_MALI_DEVFREQ\) \+='
+
+echo "  --- MTK GED ---"
+chk "overlay mt6877: CONFIG_MTK_LEGACY_THERMAL=m است" "$OVL" '^CONFIG_MTK_LEGACY_THERMAL=m'
+chk "بلوک‌های حرارتی GED زیر !IS_ENABLED(CONFIG_MTK_LEGACY_THERMAL)‌اند (پس حذف می‌شوند)" \
+    "$GEDC" '#if !IS_ENABLED\(CONFIG_MTK_LEGACY_THERMAL\)'
+N=$(grep -c 'thermal' "$GEDC")
+[ "$N" -le 3 ] && ok "در ged_dvfs.c فقط $N ارجاع thermal هست (همه کامنت/بیت وضعیت)" \
+               || bad "در ged_dvfs.c $N ارجاع thermal هست — بازبینی لازم است"
+chk "GED_EVENT_THERMAL فقط یک بیت وضعیت است، نه actuator" "$GEDC" \
+    'g_ui32EventStatus \|= GED_EVENT_THERMAL'
+
+echo "  --- gpufreq_mt6877.c ---"
+N=$(grep -c 'g_thermal_protect_limited_ignore_state' "$GPUF")
+[ "$N" -eq 1 ] && ok "g_thermal_protect_limited_ignore_state فقط تعریف شده و هرگز استفاده نمی‌شود (کد مرده)" \
+               || bad "g_thermal_protect_limited_ignore_state $N بار ارجاع شده — بازبینی لازم است"
+absc "gpufreq_mt6877.c هیچ actuator فرکانسی حرارتی ندارد" "$GPUF" \
+     'mt_gpufreq_thermal_protect|gpufreq_set_limit|mt_gpufreq_set_dvfs'
+chk "دمای GPU فقط ورودی جدول توان است (__mt_gpufreq_calculate_power)" "$GPUF" \
+    '__mt_gpufreq_calculate_power\(i, freq, volt, temp\)'
 
 sec "9) بررسی‌های «چیزی اشتباهی دست‌نخورده»"
 NOB="$VEND/drivers/misc/mediatek/thermal/common/thermal_zones/mtk_ts_cpu_noBankv2.c"

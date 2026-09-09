@@ -82,20 +82,21 @@ index c934cab30..f2e9e856a 100644
  # netlink interface to manage the thermal framework
  thermal_sys-$(CONFIG_THERMAL_NETLINK)		+= thermal_netlink.o
 diff --git a/drivers/thermal/gov_power_allocator.c b/drivers/thermal/gov_power_allocator.c
-index f883bb8aa..d8693603a 100644
+index f883bb8aa..0a988fc2e 100644
 --- a/drivers/thermal/gov_power_allocator.c
 +++ b/drivers/thermal/gov_power_allocator.c
-@@ -720,6 +720,20 @@ static int power_allocator_throttle(struct thermal_zone_device *tz, int trip_id)
+@@ -720,6 +720,21 @@ static int power_allocator_throttle(struct thermal_zone_device *tz, int trip_id)
  	if (trip_id != params->trip_max_desired_temperature)
  		return 0;
  
 +	/*
-+	 * Performance-profile gate: the IPA/PID power budget is bypassed
-+	 * entirely and every power actor is released to its maximum.
++	 * Performance-profile gate. Permanent: the IPA/PID power budget is
++	 * bypassed entirely and every power actor is released to its maximum,
++	 * independently of the performance mode and of the active governor.
 +	 * tz->passive is cleared so the zone stops polling at the passive
 +	 * delay and the PID integral does not wind up behind our back.
 +	 */
-+	if (thermal_perf_gate_enabled()) {
++	if (thermal_perf_gate_thermal_off()) {
 +		update = tz->passive;
 +		tz->passive = 0;
 +		reset_pid_controller(params);
@@ -640,6 +641,27 @@ index 000000000..f58411377
 +	return 0;
 +}
 +postcore_initcall(thermal_perf_gate_init);
+diff --git a/drivers/thermal/thermal_sysfs.c b/drivers/thermal/thermal_sysfs.c
+index 17579839f..88bd94786 100644
+--- a/drivers/thermal/thermal_sysfs.c
++++ b/drivers/thermal/thermal_sysfs.c
+@@ -633,6 +633,16 @@ cur_state_store(struct device *dev, struct device_attribute *attr,
+ 	if (state > cdev->max_state)
+ 		return -EINVAL;
+ 
++	/*
++	 * Performance-profile gate. Permanent: a userspace write to
++	 * cur_state (a vendor thermal HAL, an init.rc script, an adb shell)
++	 * is the last remaining route into a cooling device that bypasses
++	 * the governors, so it is clamped to the least-restrictive state
++	 * too. The safety allowlist still passes through untouched.
++	 */
++	if (state && thermal_perf_gate_blocked(cdev->type))
++		state = 0;
++
+ 	mutex_lock(&cdev->lock);
+ 
+ 	result = cdev->ops->set_cur_state(cdev, state);
 diff --git a/include/linux/thermal.h b/include/linux/thermal.h
 index 2b25979ec..ecf9b7666 100644
 --- a/include/linux/thermal.h

@@ -22,7 +22,7 @@ bash perf-profile/verify-patches.sh            # از ریشهٔ repo
 bash perf-profile/verify-patches.sh /path/to/repo
 ```
 
-**نتیجهٔ فعلی: ۶۶ PASS / ۰ FAIL، exit 0.**
+**نتیجهٔ فعلی: ۱۳۲ PASS / ۰ FAIL، exit 0.**
 
 ۹ بخش:
 
@@ -153,6 +153,20 @@ int  thermal_perf_gate_unregister_notifier(struct notifier_block *nb);
 void thermal_perf_gate_set_auto_perf(bool any_perf);   /* از cpufreq.c */
 ```
 
+### هر دو مسیر actuation در فریمورک حرارتی بسته است
+
+در کل `drivers/thermal/` گیت فقط **دو** فراخوانی مستقیم `cdev->ops->set_cur_state()`
+وجود دارد و هر دو گیت شده‌اند — پس هیچ governor‌ای نمی‌تواند از کنارش رد شود:
+
+| مسیر | مکان | وضعیت |
+|---|---|---|
+| همهٔ governorها (`step_wise`, `bang_bang`, `fair_share`, `power_allocator`) | `thermal_helpers.c:170` داخل `thermal_cdev_set_cur_state()` | ✅ `target = 0` |
+| نوشتن دستی از userspace (HAL حرارتی فروشنده / `init.rc` / `adb shell`) | `thermal_sysfs.c` داخل `cur_state_store()` | ✅ `state = 0` |
+
+`gov_user_space` هیچ actuator‌ای ندارد (فقط `kobject_uevent_env`)، و بای‌پس
+بودجهٔ توان IPA در `gov_power_allocator.c` هم با `thermal_perf_gate_thermal_off()`
+**بی‌قید** است — نه مشروط به حالت عملکرد.
+
 ### استثناهای ایمنی — عمداً و غیرقابل‌خاموش‌کردن
 
 `thermal_perf_gate_blocked()` بی‌قید است **جز** برای allowlist ایمنی. این‌ها هیچ‌وقت
@@ -231,8 +245,10 @@ cat /sys/kernel/thermal_perf/stats   # باید enabled=0 شود
 
 | مورد | وضعیت |
 |---|---|
-| بیلد | ✅ CI run `34298797542` روی `fa954a243` — ۷/۷ سبز، بیلد ۵۹ دقیقه و ۲۸ ثانیه |
-| وجود تک‌تک تغییرات در سورس | ✅ `verify-patches.sh` → ۶۶ PASS / ۰ FAIL |
+| بیلد | ⏳ آخرین بیلد سبز `34311661678` روی `33cbe8d6d` — ۷/۷. بیلد `3ff197743` دستی کنسل شد؛ بیلدِ این commit در راه است |
+| وجود تک‌تک تغییرات در سورس | ✅ `verify-patches.sh` → **۱۳۲ PASS / ۰ FAIL** (بخش‌های ۱–۹ + ۳b/۸b/۸c/۸d/۸e/۸f) |
+| جامعیت مسیرهای actuation | ✅ بخش ۳b: در کل فریمورک حرارتی GKI فقط ۲ فراخوانی `ops->set_cur_state()` هست، هر دو گیت شده |
+| مسیرهای کامپایل‌نشدنی | ✅ بخش ۸f: Mali kbase devfreq/IPA (بلوک mt6877 در Makefile مالِ Mali وجود ندارد)، GED (`CONFIG_MTK_LEGACY_THERMAL=m`)، `gpufreq_mt6877.c` (متغیر مرده + ورودی جدول توان) |
 | **رفتار روی سخت‌افزار واقعی** | ❌ **تست نشده.** بیلد سبز ≠ رفتار درست. باید با `collect-thermal-log.sh` روی A34 تأیید شود |
 | DVFS سمت SSPM | ❌ `CONFIG_MTK_TINYSYS_SSPM_SUPPORT=m` — firmware است، از کرنل قابل پچ نیست. تشخیصش بخش ۱۰ لاگ است |
 | کف خاموشی سخت‌افزاری LVTS | 🔒 **۱۱۷ °C** (`noBankv2.c:157`) عمداً دست‌نخورده — این عدد خودش vendor-critical است |
