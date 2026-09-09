@@ -1,0 +1,737 @@
+
+----------------------------------------------------------------------
+### 0) هویت بیلد — اول از همه این را چک می‌کنم
+----------------------------------------------------------------------
+date        : Wed Sep  9 07:38:56 +0330 2026
+uname -a    : Linux localhost 6.6.142-android15-8-4k #1 SMP PREEMPT Wed Sep  9 02:34:58 UTC 2026 aarch64 Toybox
+--- /proc/version
+Linux version 6.6.142-android15-8-4k (kleaf@build-host) (Android (11368308, +pgo, +bolt, +lto, +mlgo, based on r510928) clang version 18.0.0 (https://android.googlesource.com/toolchain/llvm-project 477610d4d0d988e69dbc3fae4fe86bff3f07f2b5), LLD 18.0.0) #1 SMP PREEMPT Wed Sep  9 02:34:58 UTC 2026
+--- /proc/cmdline
+console=ttynull stack_depot_disable=on cgroup_disable=pressure kasan.stacktrace=off kvm-arm.mode=protected bootconfig ioremap_guard  console=tty0 root=/dev/ram vmalloc=400M swiotlb=noforce transparent_hugepage=never initcall_debug=1 pelt=8 8250.nr_uarts=2 printk.devkmsg=on firmware_class.path=/vendor/firmware memblock_memsize=procfs fault_around_bytes=32768 kswapd_cpumask=0x3f kcompactd_cpumask=0x3f restrict_cma_redirect cgroup.memory=nokmem init_on_alloc=0 loop.max_part=7 has_battery_removed=0 loop.max_part=7 bootopt=64S3,32N2,64N2 loop.max_part=7 root=/dev/ram sec_debug.dump_sink=0x0 sec_debug.upload_count=0 softdog.soft_margin=100 softdog.soft_panic=1 sec_debug.debug_level=0 sec_debug.reset_reason=7 sec_extra_info.reset_rwc=50 pmic_info=3 charging_mode=0x3000 smcdsd_panel.lcdtype=8388613 mediatek-drm.fb_reserved_free=1 sec_debug.fmm_lock_offset=7340660 mtk_printk_ctrl.disable_uart=1 sec_ext.uniqueno=6dd7ee8e7e0959b8 gpt=1 usb2jtag_mode=0 bootconfig
+kernelsu    : n/a
+
+----------------------------------------------------------------------
+### 1) وضعیت گیت — مهم‌ترین بخش
+----------------------------------------------------------------------
+--- /sys/kernel/thermal_perf/enabled
+0
+--- /sys/kernel/thermal_perf/stats
+enabled=0 suppressed=0 allowed=0 extra=0
+--- /sys/kernel/thermal_perf/allow_list
+builtin: bcct charger batt shutdown kshutdown sysrst
+extra:  
+--- /sys/kernel/thermal_perf/allow_extra   [موجود، 0200 فقط‌نوشتنی]
+
+----------------------------------------------------------------------
+### 2) دما — همهٔ thermal zone ها
+----------------------------------------------------------------------
+  ac                       temp=41700     mode=enabled
+  battery                  temp=33200     mode=enabled
+  mtktscpu                 temp=54458     mode=enabled
+  mtktspmic                temp=47606     mode=enabled
+  mtktsbtsnrpa             temp=42497     mode=enabled
+  mtktsbattery             temp=34000     mode=enabled
+  mtktsAP                  temp=40        mode=enabled
+  mtktsbtsmdpa             temp=40        mode=enabled
+  mtktspa                  temp=-127000   mode=enabled
+  mtktscharger             temp=0         mode=enabled
+  tzimgs0                  temp=-127000   mode=enabled
+  tzimgs1                  temp=-127000   mode=enabled
+  mtk-master-charger       temp=0         mode=enabled
+  tzimgs2                  temp=-127000   mode=enabled
+  tzimgs3                  temp=-127000   mode=enabled
+  tzimgs4                  temp=-127000   mode=enabled
+  tzimgs5                  temp=-127000   mode=enabled
+  tzimgs6                  temp=-127000   mode=enabled
+  tzimgs7                  temp=-127000   mode=enabled
+  tzimgs8                  temp=-127000   mode=enabled
+  tzimgs9                  temp=-127000   mode=enabled
+  tzimgs10                 temp=-127000   mode=enabled
+  tzimgs11                 temp=-127000   mode=enabled
+  mtk-slave-charger        temp=0         mode=enabled
+  tzimgs12                 temp=-127000   mode=enabled
+  mtktsdctm                temp=6453      mode=enabled
+  mtktswmt                 temp=0         mode=enabled
+  mtk-mst-div-chg          temp=0         mode=enabled
+  mtk-slv-div-chg          temp=0         mode=enabled
+  mtk-mst-hvdiv-chg        temp=0         mode=enabled
+  mtk-slv-hvdiv-chg        temp=0         mode=enabled
+  mtk-gauge                temp=34000     mode=enabled
+  mtk-fg-battery           temp=34000     mode=enabled
+
+----------------------------------------------------------------------
+### 3) همهٔ cooling device ها و وضعیت فعلی‌شان
+----------------------------------------------------------------------
+  (اگر گیت فعال باشد، همه باید cur_state=0 باشند جز allowlist
+   که شامل: bcct / charger / batt / shutdown / kshutdown / sysrst است)
+  mtk-cl-shutdown02          cur=0     max=1    
+  mtk-cl-shutdown01          cur=0     max=1    
+  mtk-cl-kshutdown03         cur=0     max=1    
+  mtktspa-sysrst             cur=0     max=1    
+  mtktscharger-sysrst        cur=0     max=1    
+  tzimgs0-sysrst             cur=0     max=1    
+  tzimgs1-sysrst             cur=0     max=1    
+  tzimgs2-sysrst             cur=0     max=1    
+  tzimgs3-sysrst             cur=0     max=1    
+  tzimgs4-sysrst             cur=0     max=1    
+  tzimgs5-sysrst             cur=0     max=1    
+  tzimgs6-sysrst             cur=0     max=1    
+  tzimgs7-sysrst             cur=0     max=1    
+  mtk-cl-kshutdown02         cur=0     max=1    
+  tzimgs8-sysrst             cur=0     max=1    
+  tzimgs9-sysrst             cur=0     max=1    
+  tzimgs10-sysrst            cur=0     max=1    
+  tzimgs11-sysrst            cur=0     max=1    
+  tzimgs12-sysrst            cur=0     max=1    
+  mtktswmt-sysrst            cur=0     max=1    
+  mtktswmt-pa1               cur=0     max=1    
+  mtktswmt-pa2               cur=0     max=1    
+  clnothing1                 cur=0     max=1    
+  clnothing2                 cur=0     max=1    
+  mtk-cl-kshutdown01         cur=0     max=1    
+  clnothing3                 cur=0     max=1    
+  clnothing4                 cur=0     max=1    
+  clnothing5                 cur=0     max=1    
+  clnothing6                 cur=0     max=1    
+  clnothing7                 cur=0     max=1    
+  clnothing8                 cur=0     max=1    
+  clnothing9                 cur=0     max=1    
+  clnothing10                cur=0     max=1    
+  clnothing11                cur=0     max=1    
+  clnothing12                cur=0     max=1    
+  mtk-cl-kshutdown00         cur=0     max=1    
+  clnothing13                cur=0     max=1    
+  clnothing14                cur=0     max=1    
+  clnothing15                cur=0     max=1    
+  cpu_adaptive_0             cur=0     max=1    
+  cpu_adaptive_1             cur=0     max=1    
+  cpu_adaptive_2             cur=0     max=1    
+  cpu00                      cur=0     max=1    
+  cpu01                      cur=0     max=1    
+  cpu02                      cur=0     max=1    
+  mtk-cl-shutdown00          cur=0     max=1    
+  cpu03                      cur=0     max=1    
+  cpu04                      cur=0     max=1    
+  cpu05                      cur=0     max=1    
+  cpu06                      cur=0     max=1    
+  cpu07                      cur=0     max=1    
+  cpu08                      cur=0     max=1    
+  cpu09                      cur=0     max=1    
+  cpu10                      cur=0     max=1    
+  cpu11                      cur=0     max=1    
+  cpu12                      cur=0     max=1    
+  mtk-cl-backlight01         cur=0     max=1    
+  cpu13                      cur=0     max=1    
+  cpu14                      cur=0     max=1    
+  cpu15                      cur=0     max=1    
+  cpu16                      cur=0     max=1    
+  cpu17                      cur=0     max=1    
+  cpu18                      cur=0     max=1    
+  cpu19                      cur=0     max=1    
+  cpu20                      cur=0     max=1    
+  cpu21                      cur=0     max=1    
+  cpu22                      cur=0     max=1    
+  mtk-cl-backlight02         cur=0     max=1    
+  cpu23                      cur=0     max=1    
+  cpu24                      cur=0     max=1    
+  cpu25                      cur=0     max=1    
+  cpu26                      cur=0     max=1    
+  cpu27                      cur=0     max=1    
+  cpu28                      cur=0     max=1    
+  cpu29                      cur=0     max=1    
+  cpu30                      cur=0     max=1    
+  cpu31                      cur=0     max=1    
+  cpu32                      cur=0     max=1    
+  mtk-cl-backlight03         cur=0     max=1    
+  cpu33                      cur=0     max=1    
+  mtk-cl-bcct02              cur=0     max=1    
+  mtk-cl-bcct01              cur=0     max=1    
+  mtk-cl-bcct00              cur=0     max=1    
+  abcct                      cur=0     max=1    
+  abcct_lcmoff               cur=0     max=1    
+  mtk-cl-cam02               cur=0     max=1    
+  mtk-cl-cam01               cur=0     max=1    
+  mtk-cl-cam00               cur=0     max=1    
+  mtk-cl-cam-urgent          cur=0     max=1    
+  mtk-cl-kshutdown07         cur=0     max=1    
+  mtk-cl-scg-off             cur=0     max=1    
+  mtk-cl-mutt00              cur=0     max=1    
+  mtk-cl-mutt01              cur=0     max=1    
+  mtk-cl-mutt02              cur=0     max=1    
+  mtk-cl-mutt03              cur=0     max=1    
+  mtk-cl-mutt04              cur=0     max=1    
+  mtk-cl-mutt05              cur=0     max=1    
+  mtk-cl-mutt06              cur=0     max=1    
+  mtk-cl-mutt07              cur=0     max=1    
+  mtk-cl-tx-pwr00            cur=0     max=1    
+  mtk-cl-kshutdown06         cur=0     max=1    
+  mtk-cl-tx-pwr01            cur=0     max=1    
+  mtk-cl-tx-pwr02            cur=0     max=1    
+  mtk-cl-noIMS               cur=0     max=1    
+  mtk-cl-mdoff               cur=0     max=1    
+  mtk-cl-adp-mutt            cur=0     max=1    
+  mtk-cl-mutt00-nr           cur=0     max=1    
+  mtk-cl-mutt01-nr           cur=0     max=1    
+  mtk-cl-mutt02-nr           cur=0     max=1    
+  mtk-cl-mutt03-nr           cur=0     max=1    
+  mtk-cl-mutt04-nr           cur=0     max=1    
+  mtk-cl-kshutdown05         cur=0     max=1    
+  mtk-cl-mutt05-nr           cur=0     max=1    
+  mtk-cl-mutt06-nr           cur=0     max=1    
+  mtk-cl-mutt07-nr           cur=0     max=1    
+  mtk-cl-tx-pwr00-nr         cur=0     max=1    
+  mtk-cl-tx-pwr01-nr         cur=0     max=1    
+  mtk-cl-tx-pwr02-nr         cur=0     max=1    
+  mtk-cl-noIMS-nr            cur=0     max=1    
+  mtk-cl-mdoff-nr            cur=0     max=1    
+  mtk-cl-adp-mutt-nr         cur=0     max=1    
+  mtktscpu-sysrst            cur=0     max=1    
+  mtk-cl-kshutdown04         cur=0     max=1    
+  mtktsbuck-sysrst           cur=0     max=1    
+  mtktsAP-sysrst             cur=0     max=1    
+  mtkclVR_FPS                cur=0     max=1    
+  mtktspmic-sysrst           cur=0     max=1    
+  mt6359vcore-sysrst         cur=0     max=1    
+  mt6359vproc-sysrst         cur=0     max=1    
+  mt6359vgpu-sysrst          cur=0     max=1    
+  mt6359tsx-sysrst           cur=0     max=1    
+  mt6359dcxo-sysrst          cur=0     max=1    
+  mtktsbattery-sysrst        cur=0     max=1    
+
+----------------------------------------------------------------------
+### 4) فرکانس CPU — همهٔ کلاسترها
+----------------------------------------------------------------------
+  cpu0   cur=2000000   min=2000000   max=2000000   gov=performance
+  cpu1   cur=2000000   min=2000000   max=2000000   gov=performance
+  cpu2   cur=2000000   min=2000000   max=2000000   gov=performance
+  cpu3   cur=2000000   min=2000000   max=2000000   gov=performance
+  cpu4   cur=2000000   min=2000000   max=2000000   gov=performance
+  cpu5   cur=2000000   min=2000000   max=2000000   gov=performance
+  cpu6   cur=2600000   min=2600000   max=2600000   gov=performance
+  cpu7   cur=2600000   min=2600000   max=2600000   gov=performance
+
+  بالاترین فرکانس سخت‌افزاری هر کلاستر (cpuinfo_max_freq):
+    cpu0   hw_max=2000000   hw_min=500000
+    cpu1   hw_max=2000000   hw_min=500000
+    cpu2   hw_max=2000000   hw_min=500000
+    cpu3   hw_max=2000000   hw_min=500000
+    cpu4   hw_max=2000000   hw_min=500000
+    cpu5   hw_max=2000000   hw_min=500000
+    cpu6   hw_max=2600000   hw_min=650000
+    cpu7   hw_max=2600000   hw_min=650000
+
+  هسته‌های online (اگر cpu isolate کار کرده باشد کم می‌شود):
+0-7
+
+
+----------------------------------------------------------------------
+### 5) cpufreq_limit — آیا hard-lock واقعاً اعمال شده؟
+----------------------------------------------------------------------
+  (kobject زیر bus_get_dev_root(&cpu_subsys) ساخته می‌شود)
+--- /sys/devices/system/cpu/cpufreq_limit/cpufreq_table
+2600000 2400000 2275000 2150000 2000000 1900000 1800000 1660000 1540000 1430000 1300000 1140000 1040000 910000 740000 650000 500000 475750 450000 425750 400000 375750 351750 327500 315000 287500 263250 245000 225000 185000 162500 125000
+--- /sys/devices/system/cpu/cpufreq_limit/cpufreq_min_limit
+2600000
+--- /sys/devices/system/cpu/cpufreq_limit/cpufreq_max_limit
+2600000
+--- /sys/devices/system/cpu/cpufreq_limit/over_limit
+2275000
+
+----------------------------------------------------------------------
+### 6) GPU — gpufreq و وضعیت limiter ها
+----------------------------------------------------------------------
+  (نام دایرکتوری از gpufreq/v2_legacy/include/gpufreq_debug_legacy.h:12
+   → GPUFREQ_DIR_NAME="gpufreqv2")
+--- /proc/gpufreqv2/limit_table
+[id]          [name]  [priority]  [ceiling]  [floor]  [c_enable]  [f_enable]
+   0         SEGMENT           9          0       37           1           1
+   1           DEBUG           8         -1       -1           1           1
+   2      THERMAL_AP           7         -1       -1           1           1
+   3      THERMAL_EB           7         -1       -1           1           1
+   4          SRAMRC           6         -1       -1           1           1
+   5         BATT_OC           5         -1       -1           1           1
+   6    BATT_PERCENT           5         -1       -1           1           1
+   7        LOW_BATT           5         -1       -1           1           1
+   8             PBM           5         -1       -1           1           1
+   9        APIBOOST           4         -1       37           1           1
+  10        POWERHAL           4          0       37           1           1
+  11          FIXCMD           4         -1       -1           1           1
+--- /proc/gpufreqv2/gpufreq_status
+[GPUFREQ-DEBUG] Current Status of GPUFREQ
+[GPU-OPP]       Index: 37, Freq: 385000, Volt: 55000, Vsram: 75000
+[GPU-REALOPP]   FmeterFreq: 0, Con1Freq: 0, ReguVolt: 0, ReguVsram: 0
+[GPU-Power]     PowerCount: 0, CG: 0, MTCMOS: 0, BUCK: 0
+[GPU-Segment]   SegmentID: 2, WorkingOPPNum: 38, SignedOPPNum: 38
+[GPU-LimitC]    CeilingIndex: 0, Limiter: 0, Priority: 9
+[GPU-LimitF]    FloorIndex: 37, Limiter: 0, Priority: 9
+[Common-Status] Dual Buck: False, GPUEB Support: Off
+[Common-Status] DVFSState: 0x0002, ShaderPresent: 0x00050005
+[Common-Status] Aging: Disable, AVS: Disable, StressTest: Disable, GPM1.0: Disable
+[Common-Status] GPU_SB_Ver: 0x0000, GPU_PTP_Ver: 0x0000, Temp_Compensate: Disable
+--- /proc/gpufreqv2/gpu_working_opp_table
+[00] freq: 950000, volt: 68125, vsram: 75000, posdiv: 2, margin: 1875, power: 996
+[01] freq: 938000, volt: 68125, vsram: 75000, posdiv: 2, margin: 1875, power: 978
+[02] freq: 926000, volt: 68125, vsram: 75000, posdiv: 2, margin: 1875, power: 968
+[03] freq: 914000, volt: 67500, vsram: 75000, posdiv: 2, margin: 1875, power: 939
+[04] freq: 902000, volt: 66875, vsram: 75000, posdiv: 2, margin: 1875, power: 901
+[05] freq: 890000, volt: 66250, vsram: 75000, posdiv: 2, margin: 1875, power: 873
+[06] freq: 876000, volt: 65625, vsram: 75000, posdiv: 2, margin: 1875, power: 864
+[07] freq: 862000, volt: 65000, vsram: 75000, posdiv: 2, margin: 1875, power: 829
+[08] freq: 848000, volt: 64375, vsram: 75000, posdiv: 2, margin: 1875, power: 802
+[09] freq: 835000, volt: 63750, vsram: 75000, posdiv: 2, margin: 1875, power: 769
+[10] freq: 821000, volt: 63750, vsram: 75000, posdiv: 2, margin: 1875, power: 761
+[11] freq: 807000, volt: 63125, vsram: 75000, posdiv: 2, margin: 1875, power: 728
+[12] freq: 793000, volt: 62500, vsram: 75000, posdiv: 2, margin: 1875, power: 720
+[13] freq: 780000, volt: 62500, vsram: 75000, posdiv: 2, margin: 1875, power: 712
+[14] freq: 766000, volt: 61875, vsram: 75000, posdiv: 2, margin: 1875, power: 681
+[15] freq: 752000, volt: 61250, vsram: 75000, posdiv: 2, margin: 1250, power: 658
+[16] freq: 738000, volt: 60625, vsram: 75000, posdiv: 2, margin: 1250, power: 629
+[17] freq: 725000, volt: 60625, vsram: 75000, posdiv: 2, margin: 1250, power: 622
+[18] freq: 711000, volt: 59375, vsram: 75000, posdiv: 2, margin: 1250, power: 593
+[19] freq: 697000, volt: 59375, vsram: 75000, posdiv: 2, margin: 1250, power: 586
+[20] freq: 683000, volt: 59375, vsram: 75000, posdiv: 2, margin: 1250, power: 572
+[21] freq: 670000, volt: 58750, vsram: 75000, posdiv: 2, margin: 1250, power: 552
+[22] freq: 652000, volt: 58750, vsram: 75000, posdiv: 2, margin: 1250, power: 538
+[23] freq: 634000, volt: 58750, vsram: 75000, posdiv: 2, margin: 1250, power: 525
+[24] freq: 616000, volt: 58750, vsram: 75000, posdiv: 2, margin: 1250, power: 511
+[25] freq: 598000, volt: 58125, vsram: 75000, posdiv: 2, margin: 1250, power: 486
+[26] freq: 580000, volt: 58125, vsram: 75000, posdiv: 2, margin: 1250, power: 479
+[27] freq: 563000, volt: 57500, vsram: 75000, posdiv: 2, margin: 625, power: 455
+[28] freq: 545000, volt: 57500, vsram: 75000, posdiv: 2, margin: 625, power: 442
+[29] freq: 527000, volt: 57500, vsram: 75000, posdiv: 2, margin: 625, power: 429
+[30] freq: 509000, volt: 57500, vsram: 75000, posdiv: 2, margin: 625, power: 416
+[31] freq: 491000, volt: 56875, vsram: 75000, posdiv: 2, margin: 625, power: 394
+[32] freq: 474000, volt: 56875, vsram: 75000, posdiv: 2, margin: 625, power: 381
+[33] freq: 456000, volt: 56875, vsram: 75000, posdiv: 2, margin: 625, power: 375
+[34] freq: 438000, volt: 56875, vsram: 75000, posdiv: 2, margin: 625, power: 362
+[35] freq: 420000, volt: 56250, vsram: 75000, posdiv: 2, margin: 625, power: 349
+[36] freq: 402000, volt: 55625, vsram: 75000, posdiv: 2, margin: 625, power: 329
+[37] freq: 385000, volt: 55000, vsram: 75000, posdiv: 2, margin: 625, power: 310
+--- /proc/gpufreqv2/gpu_signed_opp_table
+[00*] freq: 950000, volt: 68125, vsram: 75000, posdiv: 2, margin: 1875, power: 0
+[01*] freq: 938000, volt: 68125, vsram: 75000, posdiv: 2, margin: 1875, power: 0
+[02*] freq: 926000, volt: 68125, vsram: 75000, posdiv: 2, margin: 1875, power: 0
+[03*] freq: 914000, volt: 67500, vsram: 75000, posdiv: 2, margin: 1875, power: 0
+[04*] freq: 902000, volt: 66875, vsram: 75000, posdiv: 2, margin: 1875, power: 0
+[05*] freq: 890000, volt: 66250, vsram: 75000, posdiv: 2, margin: 1875, power: 0
+[06*] freq: 876000, volt: 65625, vsram: 75000, posdiv: 2, margin: 1875, power: 0
+[07*] freq: 862000, volt: 65000, vsram: 75000, posdiv: 2, margin: 1875, power: 0
+[08*] freq: 848000, volt: 64375, vsram: 75000, posdiv: 2, margin: 1875, power: 0
+[09*] freq: 835000, volt: 63750, vsram: 75000, posdiv: 2, margin: 1875, power: 0
+[10*] freq: 821000, volt: 63750, vsram: 75000, posdiv: 2, margin: 1875, power: 0
+[11*] freq: 807000, volt: 63125, vsram: 75000, posdiv: 2, margin: 1875, power: 0
+[12*] freq: 793000, volt: 62500, vsram: 75000, posdiv: 2, margin: 1875, power: 0
+[13*] freq: 780000, volt: 62500, vsram: 75000, posdiv: 2, margin: 1875, power: 0
+[14*] freq: 766000, volt: 61875, vsram: 75000, posdiv: 2, margin: 1875, power: 0
+[15*] freq: 752000, volt: 61250, vsram: 75000, posdiv: 2, margin: 1250, power: 0
+[16*] freq: 738000, volt: 60625, vsram: 75000, posdiv: 2, margin: 1250, power: 0
+[17*] freq: 725000, volt: 60625, vsram: 75000, posdiv: 2, margin: 1250, power: 0
+[18*] freq: 711000, volt: 59375, vsram: 75000, posdiv: 2, margin: 1250, power: 0
+[19*] freq: 697000, volt: 59375, vsram: 75000, posdiv: 2, margin: 1250, power: 0
+[20*] freq: 683000, volt: 59375, vsram: 75000, posdiv: 2, margin: 1250, power: 0
+[21*] freq: 670000, volt: 58750, vsram: 75000, posdiv: 2, margin: 1250, power: 0
+[22*] freq: 652000, volt: 58750, vsram: 75000, posdiv: 2, margin: 1250, power: 0
+[23*] freq: 634000, volt: 58750, vsram: 75000, posdiv: 2, margin: 1250, power: 0
+[24*] freq: 616000, volt: 58750, vsram: 75000, posdiv: 2, margin: 1250, power: 0
+[25*] freq: 598000, volt: 58125, vsram: 75000, posdiv: 2, margin: 1250, power: 0
+[26*] freq: 580000, volt: 58125, vsram: 75000, posdiv: 2, margin: 1250, power: 0
+[27*] freq: 563000, volt: 57500, vsram: 75000, posdiv: 2, margin: 625, power: 0
+[28*] freq: 545000, volt: 57500, vsram: 75000, posdiv: 2, margin: 625, power: 0
+[29*] freq: 527000, volt: 57500, vsram: 75000, posdiv: 2, margin: 625, power: 0
+[30*] freq: 509000, volt: 57500, vsram: 75000, posdiv: 2, margin: 625, power: 0
+[31*] freq: 491000, volt: 56875, vsram: 75000, posdiv: 2, margin: 625, power: 0
+[32*] freq: 474000, volt: 56875, vsram: 75000, posdiv: 2, margin: 625, power: 0
+[33*] freq: 456000, volt: 56875, vsram: 75000, posdiv: 2, margin: 625, power: 0
+[34*] freq: 438000, volt: 56875, vsram: 75000, posdiv: 2, margin: 625, power: 0
+[35*] freq: 420000, volt: 56250, vsram: 75000, posdiv: 2, margin: 625, power: 0
+[36*] freq: 402000, volt: 55625, vsram: 75000, posdiv: 2, margin: 625, power: 0
+[37*] freq: 385000, volt: 55000, vsram: 75000, posdiv: 2, margin: 625, power: 0
+--- /proc/gpufreqv2/fix_target_opp_index
+[GPUFREQ-DEBUG] fixed OPP index is disabled
+--- /proc/gpufreqv2/opp_stress_test
+[GPUFREQ-DEBUG] OPP stress test is disabled
+--- لیست کامل /proc/gpufreqv2:
+    fix_target_opp_index
+    gpu_signed_opp_table
+    gpu_working_opp_table
+    gpufreq_status
+    limit_table
+    opp_stress_test
+
+  در limit_table باید برای LIMIT_THERMAL_AP / _EB / LIMIT_PBM سقف و کف = 0
+  ببینی وقتی گیت فعال است. عدد دیگری = فیکس GPU کار نکرده.
+
+--- GED:
+    apo_autosuspend_delay_ms
+    apo_autosuspend_delay_target_ref_count
+    apo_force_hint
+    apo_legacy
+    apo_lp_thr_us
+    apo_status
+    apo_thr_us
+    apo_wakeup_us
+    autosuspend_stress
+    current_freqency
+    custom_boost_gpu_freq
+    custom_upbound_gpu_freq
+    dcs_adjust_fr_cnt
+    dcs_adjust_support
+    dcs_mode
+    dcs_stress
+    default_fps_margin_support
+    dvfs_async_ratio
+    dvfs_loading_mode
+    dvfs_margin_value
+    dvfs_workload_mode
+    early_force_fallback_policy
+    eb_dvfs_policy
+    fallback_frequency_adjust
+    fallback_interval
+    fallback_timing
+    fallback_window_size
+    force_loading_base
+    frame_base_optimize
+    fw_idle
+    ged_fallback_tuning
+    ged_kpi
+    ged_log_level
+    gpu_boost_level
+    gpu_fps
+    gpu_power_on_off_test
+    gpu_power_state
+    gpu_slc_policy
+    gpu_sum_loading
+    gpu_utilization
+    loading_base_dvfs_step
+    loading_stride_size
+    loading_window_size
+    opp_logs
+    pre_fence_chk
+    previous_freqency
+    target_fps_vsync
+    timer_base_dvfs_margin
+    total_gpu_freq_level_count
+    whitebox_power_force_state
+    whitebox_power_support
+--- /sys/kernel/ged/hal/gpu_dvfs_enable   [موجود نیست]
+--- /sys/kernel/ged/hal/gpu_utilization
+0 0 100
+
+----------------------------------------------------------------------
+### 7) ATM / DTM — همان مسیری که در ممیزی بسته شد
+----------------------------------------------------------------------
+--- /proc/clatm   [موجود نیست]
+--- /proc/clatm_setting   [موجود نیست]
+--- /proc/clatm_cpu_min_opp   [موجود نیست]
+--- /proc/clatm_gpu_threshold   [موجود نیست]
+--- /proc/clctm   [موجود نیست]
+
+  اگر در clatm یک بودجهٔ توان محدود دیدی و گیت فعال بود، یعنی فیکس
+  ap_thermal_limit.c کار نکرده -> این مهم‌ترین مدرک است.
+
+----------------------------------------------------------------------
+### 8) PPM — وضعیت policy ها
+----------------------------------------------------------------------
+--- /proc/ppm/policy/client_exec_time
+
+==========================================
+PPM Client Execution Time (us)
+==========================================
+Client    Avg Time  Max Time  
+DVFS      0         0         
+HOTPLUG   0         0         
+--- /proc/ppm/policy/dlpt_budget_trans_percentage
+trans_percentage = 65
+PPM DLPT activate = 0
+--- /proc/ppm/policy/dlpt_limit
+limited power = 0
+PPM DLPT activate = 0
+--- /proc/ppm/policy/dump_info
+
+==========================================
+PPM Client Execution Time (us)
+==========================================
+Client    Avg Time  Max Time  
+DVFS      0         0         
+HOTPLUG   0         0         
+--- /proc/ppm/policy/forcelimit_cpu_core
+cl0: min_core_num = -1, max_core_num = -1
+cl1: min_core_num = -1, max_core_num = -1
+--- /proc/ppm/policy/hard_userlimit_cpu_freq
+0: min_freq_idx = -1, max_freq_idx = -1
+1: min_freq_idx = -1, max_freq_idx = -1
+--- /proc/ppm/policy/hard_userlimit_freq_limit_by_others
+cluster 0 max_freq_limit = 0
+cluster 1 max_freq_limit = 0
+--- /proc/ppm/policy/hard_userlimit_max_cpu_freq
+0: min_freq_idx = -1, max_freq_idx = -1
+1: min_freq_idx = -1, max_freq_idx = -1
+--- /proc/ppm/policy/hard_userlimit_min_cpu_freq
+0: min_freq_idx = -1, max_freq_idx = -1
+1: min_freq_idx = -1, max_freq_idx = -1
+--- /proc/ppm/policy/lcmoff_min_freq
+lcmoff_min_freq = 0 KHz
+--- /proc/ppm/policy/profile_on
+0
+--- /proc/ppm/policy/ptpod_test
+PTPOD is_activate = 0
+--- /proc/ppm/policy/sysboost_cluster_freq_limit
+[0] UT: 0	(-1)(-1)(-1)(-1)
+[1] WIFI: 0	(-1)(-1)(-1)(-1)
+[2] PERFSERV: 0	(-1)(-1)(-1)(-1)
+[3] USB: 0	(-1)(-1)(-1)(-1)
+[4] USB_PD: 0	(-1)(-1)(-1)(-1)
+[5] DEBUGD: 0	(-1)(-1)(-1)(-1)
+[6] DEBUGD_64: 0	(-1)(-1)(-1)(-1)
+[7] BOOT_TIME_OPT: 0	(-1)(-1)(-1)(-1)
+is_core_limited = 0, is_freq_limited = 0
+cluster 0 = (-1)(-1)(-1)(-1)
+cluster 1 = (-1)(-1)(-1)(-1)
+--- /proc/ppm/policy/sysboost_cluster_freqidx_limit
+[0] UT: 0	(-1)(-1)(-1)(-1)
+[1] WIFI: 0	(-1)(-1)(-1)(-1)
+[2] PERFSERV: 0	(-1)(-1)(-1)(-1)
+[3] USB: 0	(-1)(-1)(-1)(-1)
+[4] USB_PD: 0	(-1)(-1)(-1)(-1)
+[5] DEBUGD: 0	(-1)(-1)(-1)(-1)
+[6] DEBUGD_64: 0	(-1)(-1)(-1)(-1)
+[7] BOOT_TIME_OPT: 0	(-1)(-1)(-1)(-1)
+is_core_limited = 0, is_freq_limited = 0
+cluster 0 = (-1)(-1)(-1)(-1)
+cluster 1 = (-1)(-1)(-1)(-1)
+--- /proc/ppm/policy/sysboost_freq
+[0] UT: 0
+[1] WIFI: 0
+[2] PERFSERV: 0
+[3] USB: 0
+[4] USB_PD: 0
+[5] DEBUGD: 0
+[6] DEBUGD_64: 0
+[7] BOOT_TIME_OPT: 0
+is_core_limited = 0, is_freq_limited = 0
+cluster 0 = (-1)(-1)(-1)(-1)
+cluster 1 = (-1)(-1)(-1)(-1)
+--- /proc/ppm/policy/thermal_cur_power
+current power = 489
+min power = 489
+max power = 3186
+--- /proc/ppm/policy/thermal_limit
+limited power = 0
+PPM thermal activate = 0
+--- /proc/ppm/policy/userlimit_cpu_freq
+0: min_freq_idx = -1, max_freq_idx = -1
+1: min_freq_idx = -1, max_freq_idx = -1
+--- /proc/ppm/policy/userlimit_freq_limit_by_others
+cluster 0 max_freq_limit = 0
+cluster 1 max_freq_limit = 0
+--- /proc/ppm/policy/userlimit_max_cpu_freq
+0: min_freq_idx = -1, max_freq_idx = -1
+1: min_freq_idx = -1, max_freq_idx = -1
+--- /proc/ppm/policy/userlimit_min_cpu_freq
+0: min_freq_idx = -1, max_freq_idx = -1
+1: min_freq_idx = -1, max_freq_idx = -1
+--- /proc/ppm/policy/ut_fix_core_num
+cluster 0 fix core num = -1
+cluster 1 fix core num = -1
+--- /proc/ppm/policy/ut_fix_freq_idx
+cluster 0 fix freq idx = -1
+cluster 1 fix freq idx = -1
+--- /proc/ppm/profile
+  (خوانده نشد)
+--- لیست کامل /proc/ppm:
+    /proc/ppm:
+    cobra_budget_to_limit
+    cobra_limit_to_budget
+    cpi
+    debug
+    dump_cluster_0_dvfs_table
+    dump_cluster_1_dvfs_table
+    dump_policy_list
+    dump_power_table
+    enabled
+    exclusive_core
+    func_debug
+    policy
+    policy_status
+    profile
+    
+    /proc/ppm/cpi:
+    cpi_enable
+    cpi_value
+    
+    /proc/ppm/policy:
+    client_exec_time
+    dlpt_budget_trans_percentage
+    dlpt_limit
+    dump_info
+    forcelimit_cpu_core
+    hard_userlimit_cpu_freq
+    hard_userlimit_freq_limit_by_others
+    hard_userlimit_max_cpu_freq
+    hard_userlimit_min_cpu_freq
+    lcmoff_min_freq
+    profile_on
+    ptpod_test
+    sysboost_cluster_freq_limit
+    sysboost_cluster_freqidx_limit
+    sysboost_freq
+    thermal_cur_power
+    thermal_limit
+    userlimit_cpu_freq
+    userlimit_freq_limit_by_others
+    userlimit_max_cpu_freq
+    userlimit_min_cpu_freq
+    ut_fix_core_num
+    ut_fix_freq_idx
+    
+    /proc/ppm/profile:
+
+----------------------------------------------------------------------
+### 9) thermal zone خودِ CPU (mtk_ts_cpu_noBankv2 — برای mt6877 build می‌شود)
+----------------------------------------------------------------------
+--- /proc/tzcpu   [موجود نیست]
+--- /proc/thermlmt
+0,0,0,385000,85100,0,0
+--- /proc/ttpct
+0,0
+--- /proc/tzcpu_read_temperature   [موجود نیست]
+--- /proc/tzcpu_fastpoll   [موجود نیست]
+
+----------------------------------------------------------------------
+### 10) SSPM — تنها مسیری که از کرنل قابل کنترل نیست
+----------------------------------------------------------------------
+--- /proc/sspm_thermal_throttle   [موجود نیست]
+--- /proc/clatm_sspm   [موجود نیست]
+
+  اگر گیت فعال است و فرکانس هنوز افت می‌کند و همهٔ بخش‌های بالا تمیزند،
+  متهم SSPM است (firmware است، نه کد کرنل). این دو فایل را حتماً بفرست.
+
+----------------------------------------------------------------------
+### 11) سایر limiter ها
+----------------------------------------------------------------------
+--- /proc/thermal_mdla_limit   [موجود نیست]
+--- /proc/thermal_vpu_limit   [موجود نیست]
+--- /proc/tx_thro_limit   [موجود نیست]
+--- /proc/bcctlmt
+-1,-1
+chrlmt_chr_input_curr_limit -1
+chrlmt_bat_chr_curr_limit -1
+abcct_cur_bat_chr_curr_limit 0
+cl_bcct_cur_limit 65535
+--- /proc/battery_status
+0,0,0,0,0,0,0,0
+--- /proc/clabcct   [موجود نیست]
+--- /proc/clbcct   [موجود نیست]
+
+  نکته: /proc/pmic_current_limit ، /proc/set_sspm_big_limit_threshold و
+  /proc/cldebug برای mt6877 build نمی‌شوند (به ترتیب در mtk_ts_cpu.c،
+  v1/mt6893 و mtk_cooler_3Gmutt.c) — [موجود نیست] برای اینها طبیعی است.
+
+----------------------------------------------------------------------
+### 12) dmesg — پیام‌های گیت و خطاها
+----------------------------------------------------------------------
+--- thermal_perf_gate (باید 'registered' و موقع فعال‌سازی 'SUPPRESSED' ببینی):
+--- hard-lock سی‌پی‌یو:
+[ 2266.802890] cpufreq_limit_process_over_limit: freq_update_request : new userspace max 2000000 2600000
+[ 2266.802900] cpufreq_limit_update_current_freq: current freq: ltl(2000000 ~ 2000000), big(2600000 ~ 2600000)
+[ 2266.912934] cpufreq_limit_process_min_freq: id(1) min_lock_freq(-1)
+[ 2266.912946] cpufreq_limit_update_current_freq: current freq: ltl(2000000 ~ 2000000), big(2600000 ~ 2600000)
+[ 2267.419842] cpufreq_limit_process_min_freq: id(0) min_lock_freq(-1)
+[ 2267.419852] cpufreq_limit_process_over_limit: freq_update_request : new userspace max 2000000 2600000
+[ 2267.419861] cpufreq_limit_update_current_freq: current freq: ltl(2000000 ~ 2000000), big(2600000 ~ 2600000)
+[ 2267.760132] cpufreq_limit_process_min_freq: little(125000-500000, set:1150000), big(650000-2600000, set:1140000)
+[ 2267.760143] cpufreq_limit_process_over_limit: freq_update_request : new userspace max 2000000 2600000
+[ 2267.760151] cpufreq_limit_update_current_freq: current freq: ltl(2000000 ~ 2000000), big(2600000 ~ 2600000)
+[ 2267.856171] cpufreq_limit_process_min_freq: little(125000-500000, set:1150000), big(650000-2600000, set:2600000)
+[ 2267.856183] cpufreq_limit_process_over_limit: freq_update_request : new userspace max 2000000 2600000
+[ 2267.856192] cpufreq_limit_update_current_freq: current freq: ltl(2000000 ~ 2000000), big(2600000 ~ 2600000)
+[ 2267.892699] cpufreq_limit_process_min_freq: little(125000-500000, set:1150000), big(650000-2600000, set:1075200)
+[ 2267.892710] cpufreq_limit_process_over_limit: freq_update_request : new userspace max 2000000 2600000
+[ 2267.892718] cpufreq_limit_update_current_freq: current freq: ltl(2000000 ~ 2000000), big(2600000 ~ 2600000)
+[ 2267.909158] cpufreq_limit_process_max_freq: id(0) max_lock_freq(2600000)
+[ 2267.909164] cpufreq_limit_process_max_freq: little(125000-500000, set:2000000), big(650000-2600000, set:2600000)
+[ 2267.909173] cpufreq_limit_process_over_limit: freq_update_request : new userspace max 2000000 2600000
+[ 2267.909181] cpufreq_limit_update_current_freq: current freq: ltl(2000000 ~ 2000000), big(2600000 ~ 2600000)
+--- گیت GPU:
+--- خطاهای thermal / oops / WARN:
+[ 2211.809984] fps_el7xx_work_func_debug: ldo: 0, sleep: 0, tz: 1, spi_value: 0x0, type: EL721
+[ 2222.816702] fps_el7xx_work_func_debug: ldo: 0, sleep: 0, tz: 1, spi_value: 0x0, type: EL721
+[ 2233.824725] fps_el7xx_work_func_debug: ldo: 0, sleep: 0, tz: 1, spi_value: 0x0, type: EL721
+[ 2244.832678] fps_el7xx_work_func_debug: ldo: 0, sleep: 0, tz: 1, spi_value: 0x0, type: EL721
+[ 2255.840919] fps_el7xx_work_func_debug: ldo: 0, sleep: 0, tz: 1, spi_value: 0x0, type: EL721
+[ 2266.848694] fps_el7xx_work_func_debug: ldo: 0, sleep: 0, tz: 1, spi_value: 0x0, type: EL721
+--- آخرین ۶۰ خط dmesg:
+[ 2268.036340] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.044402] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.052778] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.061058] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.069424] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.077731] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.080677] [Input Booster]  Press Timeout Func :::: Unique_Id(10) Tail_Time(0)
+[ 2268.080845] _set_freq_limit: input: id(1), min(1075200), max(0)
+[ 2268.080857] cpufreq_limit_process_min_freq: little(125000-500000, set:1150000), big(650000-2600000, set:1075200)
+[ 2268.080867] cpufreq_limit_process_over_limit: freq_update_request : new userspace max 2000000 2600000
+[ 2268.080875] cpufreq_limit_update_current_freq: current freq: ltl(2000000 ~ 2000000), big(2600000 ~ 2600000)
+[ 2268.081011] [Input Booster]  Del Ib Instance's Id : 10
+[ 2268.086121] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.094382] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.102732] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.111002] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.119342] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.127669] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.128661] [Thermal/TZ/BTSNRPA]T_btsnrpa=42436
+[ 2268.136073] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.140656] goodix_i2c 51-005d: [sec_input] [P] tID:0.2909 z:16 major:4 minor:4 loc:C.C tc:1 type:0 noise:(0,00), nlvl:4, maxS:16, hid:0, fid:0
+[ 2268.140778] [Input Booster]  IB Trigger Press :: IB Uniq Id(11)
+[ 2268.140814] [Input Booster]  Press State Func :::: Unique_Id(11) Head_Time(120)
+[ 2268.140822] _set_freq_limit: input: id(1), min(1140000), max(0)
+[ 2268.140829] cpufreq_limit_process_min_freq: little(125000-500000, set:1150000), big(650000-2600000, set:1140000)
+[ 2268.140839] cpufreq_limit_process_over_limit: freq_update_request : new userspace max 2000000 2600000
+[ 2268.140846] cpufreq_limit_update_current_freq: current freq: ltl(2000000 ~ 2000000), big(2600000 ~ 2600000)
+[ 2268.144570] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.152738] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.161006] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.169385] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.177715] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.186049] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.190706] goodix_i2c 51-005d: [sec_input] [R] tID:0 loc:C.C dd:1,0 mc:5 tc:0 p:0 noise:(0,00) nlvl:6, maxS:17, hid:0, fid:0
+[ 2268.190953] [Input Booster]  IB Trigger Release :: Uniq ID(11)
+[ 2268.194553] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.202957] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.210711] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.220018] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.244047] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.253482] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.256379] _set_freq_limit: input: id(0), min(-1), max(0)
+[ 2268.256398] cpufreq_limit_process_min_freq: id(0) min_lock_freq(-1)
+[ 2268.256408] cpufreq_limit_process_over_limit: freq_update_request : new userspace max 2000000 2600000
+[ 2268.256417] cpufreq_limit_update_current_freq: current freq: ltl(2000000 ~ 2000000), big(2600000 ~ 2600000)
+[ 2268.261794] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.264661] [Input Booster]  Press Timeout Func :::: Unique_Id(11) Tail_Time(0)
+[ 2268.264821] _set_freq_limit: input: id(1), min(1075200), max(0)
+[ 2268.264831] cpufreq_limit_process_min_freq: little(125000-500000, set:1150000), big(650000-2600000, set:1075200)
+[ 2268.264842] cpufreq_limit_process_over_limit: freq_update_request : new userspace max 2000000 2600000
+[ 2268.264850] cpufreq_limit_update_current_freq: current freq: ltl(2000000 ~ 2000000), big(2600000 ~ 2600000)
+[ 2268.264910] [Input Booster]  Del Ib Instance's Id : 11
+[ 2268.269893] [DISP]_dispatch_lye_blob_idx layer_num = 7
+[ 2268.278434] [DISP]_dispatch_lye_blob_idx layer_num = 8
+[ 2268.286255] [DISP]_dispatch_lye_blob_idx layer_num = 8
+[ 2268.294525] [DISP]_dispatch_lye_blob_idx layer_num = 8
+[ 2268.302892] [DISP]_dispatch_lye_blob_idx layer_num = 8
+[ 2268.311398] [DISP]_dispatch_lye_blob_idx layer_num = 8
+[ 2268.319935] [DISP]_dispatch_lye_blob_idx layer_num = 8
+[ 2268.327963] [DISP]_dispatch_lye_blob_idx layer_num = 8
+
+----------------------------------------------------------------------
+### 13) نتیجهٔ خودکار (چک سریع)
+----------------------------------------------------------------------
+  gate enabled      : 0
+  gate stats        : enabled=0 suppressed=0 allowed=0 extra=0 
+  cooling device غیر allowlist با state غیرصفر: هیچ
+
+----------------------------------------------------------------------
+### پایان
+----------------------------------------------------------------------
+این فایل را کامل بفرست. بخش‌های ۱، ۳، ۴، ۶، ۷ و ۱۰ از همه مهم‌ترند.
+hostname : a34x
+saved-at : Wed Sep  9 07:39:08 +0330 2026
