@@ -208,11 +208,11 @@ show /sys/kernel/ged/hal/gpu_dvfs_enable
 show /sys/kernel/ged/hal/gpu_utilization
 
 sec "7) ATM / DTM — همان مسیری که در ممیزی بسته شد"
-show /proc/clatm
-show /proc/clatm_setting
-show /proc/clatm_cpu_min_opp
-show /proc/clatm_gpu_threshold
-show /proc/clctm
+show /proc/driver/thermal/clatm
+show /proc/driver/thermal/clatm_setting
+show /proc/driver/thermal/clatm_cpu_min_opp
+show /proc/driver/thermal/clatm_gpu_threshold
+show /proc/driver/thermal/clctm
 echo
 echo "  اگر در clatm یک بودجهٔ توان محدود دیدی و گیت فعال بود، یعنی فیکس"
 echo "  ap_thermal_limit.c کار نکرده -> این مهم‌ترین مدرک است."
@@ -227,27 +227,27 @@ echo "--- لیست کامل /proc/ppm:"
 ls -1R /proc/ppm 2>/dev/null | sed 's/^/    /' || echo "    [/proc/ppm موجود نیست]"
 
 sec "9) thermal zone خودِ CPU (mtk_ts_cpu_noBankv2 — برای mt6877 build می‌شود)"
-show /proc/tzcpu
+show /proc/driver/thermal/tzcpu
 show /proc/thermlmt
 show /proc/ttpct
-show /proc/tzcpu_read_temperature
-show /proc/tzcpu_fastpoll
+show /proc/driver/thermal/tzcpu_read_temperature
+show /proc/driver/thermal/tzcpu_fastpoll
 
 sec "10) SSPM — تنها مسیری که از کرنل قابل کنترل نیست"
-show /proc/sspm_thermal_throttle
-show /proc/clatm_sspm
+show /proc/driver/thermal/sspm_thermal_throttle
+show /proc/driver/thermal/clatm_sspm
 echo
 echo "  اگر گیت فعال است و فرکانس هنوز افت می‌کند و همهٔ بخش‌های بالا تمیزند،"
 echo "  متهم SSPM است (firmware است، نه کد کرنل). این دو فایل را حتماً بفرست."
 
 sec "11) سایر limiter ها"
-show /proc/thermal_mdla_limit
-show /proc/thermal_vpu_limit
+show /proc/driver/thermal/thermal_mdla_limit
+show /proc/driver/thermal/thermal_vpu_limit
 show /proc/tx_thro_limit
 show /proc/bcctlmt
 show /proc/battery_status
-show /proc/clabcct
-show /proc/clbcct
+show /proc/driver/thermal/clabcct
+show /proc/driver/thermal/clbcct
 echo
 echo "  نکته: /proc/pmic_current_limit ، /proc/set_sspm_big_limit_threshold و"
 echo "  /proc/cldebug برای mt6877 build نمی‌شوند (به ترتیب در mtk_ts_cpu.c،"
@@ -291,7 +291,7 @@ if [ "$WATCH" != "0" ]; then
     BIGT=$(cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null | sort -n | tail -1)
     C0=$(cat $CPUS/cpu0/cpufreq/scaling_cur_freq 2>/dev/null)
     C6=$(cat $CPUS/cpu6/cpufreq/scaling_cur_freq 2>/dev/null)
-    ATM=$(cat /proc/clatm 2>/dev/null | tr '\n' ' ' | cut -c1-40)
+    ATM=$(cat /proc/driver/thermal/clatm 2>/dev/null | tr '\n' ' ' | cut -c1-40)
     GPU=$(cat /proc/gpufreqv2/gpufreq_status 2>/dev/null | grep -iE "current|freq" | head -1 | cut -c1-30)
     echo "$(date +%s),$C0,$C6,$BIGT,$GPU,$ATM"
     i=$((i+1))
