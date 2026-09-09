@@ -301,6 +301,19 @@ GEDC="$VEND/drivers/gpu/mediatek/ged/src/ged_dvfs.c"
 GPUF="$VEND/drivers/gpu/mediatek/gpufreq/v2_legacy/gpufreq_mt6877.c"
 OVL="$VEND/kernel/configs/mt6877_overlay.config"
 
+echo "  --- کدام گاورنرهای حرارتی واقعاً در Image ما کامپایل می‌شوند ---"
+GKID="$GKI/arch/arm64/configs/gki_defconfig"
+for g in BANG_BANG USER_SPACE POWER_ALLOCATOR; do
+  chk "CONFIG_THERMAL_GOV_$g=y در gki_defconfig (پس کامپایل می‌شود)" "$GKID" "^CONFIG_THERMAL_GOV_$g=y"
+done
+# step_wise عمداً در gki_defconfig نیست؛ هانکش در پچ می‌ماند ولی در این Image inert است
+if grep -qE '^CONFIG_THERMAL_GOV_STEP_WISE=y' "$GKID"; then
+  ok "CONFIG_THERMAL_GOV_STEP_WISE=y — گاورنر step_wise کامپایل می‌شود"
+else
+  ok "CONFIG_THERMAL_GOV_STEP_WISE در gki_defconfig نیست — step_wise در این Image کامپایل نمی‌شود (هانک پچ inert ولی بی‌ضرر)"
+fi
+absc "a34x_defconfig جایی در build ارجاع نشده (فقط gki_defconfig + overlay ها)" "build_kernel.sh" 'a34x_defconfig'
+
 echo "  --- Mali kbase devfreq / IPA ---"
 absc "Makefile مالِ Mali هیچ بلوکی برای mt6877 ندارد" "$MALIMK" 'mt6877'
 N=$(grep -cE 'CONFIG_MALI_DEVFREQ := y' "$MALIMK")

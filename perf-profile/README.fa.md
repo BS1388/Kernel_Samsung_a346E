@@ -22,7 +22,7 @@ bash perf-profile/verify-patches.sh            # از ریشهٔ repo
 bash perf-profile/verify-patches.sh /path/to/repo
 ```
 
-**نتیجهٔ فعلی: ۱۳۲ PASS / ۰ FAIL، exit 0.**
+**نتیجهٔ فعلی: ۱۳۷ PASS / ۰ FAIL، exit 0.**
 
 ۹ بخش:
 
@@ -245,10 +245,12 @@ cat /sys/kernel/thermal_perf/stats   # باید enabled=0 شود
 
 | مورد | وضعیت |
 |---|---|
-| بیلد | ⏳ آخرین بیلد سبز `34311661678` روی `33cbe8d6d` — ۷/۷. بیلد `3ff197743` دستی کنسل شد؛ بیلدِ این commit در راه است |
-| وجود تک‌تک تغییرات در سورس | ✅ `verify-patches.sh` → **۱۳۲ PASS / ۰ FAIL** (بخش‌های ۱–۹ + ۳b/۸b/۸c/۸d/۸e/۸f) |
+| بیلد | ✅ CI run `34322047743` روی `6fb4509b7` — **۷/۷ سبز**، artifact `kernel-image-NO-ROOT-enforcing-nocustom` = ۱٬۵۹۶۹٬۳۶۵ بایت |
+| وجود تک‌تک تغییرات در سورس | ✅ `verify-patches.sh` → **۱۳۷ PASS / ۰ FAIL** (بخش‌های ۱–۹ + ۳b/۸b/۸c/۸d/۸e/۸f) |
 | جامعیت مسیرهای actuation | ✅ بخش ۳b: در کل فریمورک حرارتی GKI فقط ۲ فراخوانی `ops->set_cur_state()` هست، هر دو گیت شده |
 | مسیرهای کامپایل‌نشدنی | ✅ بخش ۸f: Mali kbase devfreq/IPA (بلوک mt6877 در Makefile مالِ Mali وجود ندارد)، GED (`CONFIG_MTK_LEGACY_THERMAL=m`)، `gpufreq_mt6877.c` (متغیر مرده + ورودی جدول توان) |
+| کدام گاورنر حرارتی در Image ماست | ⚠️ `gki_defconfig` فقط `BANG_BANG` / `USER_SPACE` / `POWER_ALLOCATOR` را دارد. **`CONFIG_THERMAL_GOV_STEP_WISE` نیست** → `gov_step_wise.o` کامپایل نمی‌شود و هانکش در این Image inert است (بی‌ضرر؛ پوشش واقعی از `thermal_helpers.c` می‌آید). `a34x_defconfig` که `STEP_WISE=y` دارد هیچ‌جا در build ارجاع نشده |
+| لاگ jobهای CI | ❌ از `*.blob.core.windows.net` قابل خواندن نیست، پس خط `.o` هر فایل در لاگ دیده نمی‌شود. به‌جایش ثابت شده هر دو فایل تغییریافته بی‌قید در بیلد هستند: `thermal_sysfs.o` در `Makefile:7` و `gov_power_allocator.o` زیر `CONFIG_THERMAL_GOV_POWER_ALLOCATOR=y` (`gki_defconfig:468`) |
 | **رفتار روی سخت‌افزار واقعی** | ❌ **تست نشده.** بیلد سبز ≠ رفتار درست. باید با `collect-thermal-log.sh` روی A34 تأیید شود |
 | DVFS سمت SSPM | ❌ `CONFIG_MTK_TINYSYS_SSPM_SUPPORT=m` — firmware است، از کرنل قابل پچ نیست. تشخیصش بخش ۱۰ لاگ است |
 | کف خاموشی سخت‌افزاری LVTS | 🔒 **۱۱۷ °C** (`noBankv2.c:157`) عمداً دست‌نخورده — این عدد خودش vendor-critical است |
