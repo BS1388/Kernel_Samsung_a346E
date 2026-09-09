@@ -29,20 +29,51 @@
 #   --watch [N]   نمونهٔ زمانی N ثانیه‌ای (پیش‌فرض ۲۰) — زیر بار اجرا کن
 #   --dir PATH    مسیر ذخیره (پیش‌فرض /storage/emulated/0/Download)
 #   --stdout      هم‌زمان روی صفحه هم چاپ شود (اگر tee موجود باشد)
+#   --no-root     با su اجرا نشو (فقط برای دیباگ)
 # -----------------------------------------------------------------------------
 WATCH=0
 STDOUT=0
+NOROOT=0
+ASROOT=0
 OUTDIR="/storage/emulated/0/Download"
+PASSTHRU=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --watch)  WATCH="${2:-20}"; [ $# -ge 2 ] && shift ;;
-    --dir)    OUTDIR="${2:-$OUTDIR}"; [ $# -ge 2 ] && shift ;;
-    --stdout) STDOUT=1 ;;
+    --watch)  WATCH="${2:-20}"; PASSTHRU="$PASSTHRU --watch $WATCH"; [ $# -ge 2 ] && shift ;;
+    --dir)    OUTDIR="${2:-$OUTDIR}"; PASSTHRU="$PASSTHRU --dir $OUTDIR"; [ $# -ge 2 ] && shift ;;
+    --stdout) STDOUT=1; PASSTHRU="$PASSTHRU --stdout" ;;
+    --no-root) NOROOT=1 ;;
+    --as-root) ASROOT=1 ;;
     *) echo "گزینهٔ ناشناخته: $1" ;;
   esac
   shift
 done
+
+# -----------------------------------------------------------------------------
+# اجرای خودکار با root.
+# بیشتر بخش‌ها (dmesg، /proc/ppm، /proc/gpufreqv2، sysfs حرارتی) بدون root خالی
+# می‌شوند، پس اگر root نیستیم خودمان با su دوباره اجرا می‌شویم. --as-root جلوی
+# حلقهٔ بی‌پایان را می‌گیرد.
+# -----------------------------------------------------------------------------
+if [ "$ASROOT" != "1" ] && [ "$NOROOT" != "1" ] && [ "$(id -u 2>/dev/null)" != "0" ]; then
+  if command -v su >/dev/null 2>&1; then
+    echo "برای خواندن dmesg و proc/sysfs به root نیاز است — با su اجرا می‌شود..."
+    echo "(اگر پنجرهٔ Magisk/KernelSU آمد، Grant را بزن)"
+    echo
+    exec su -c "sh '$0' $PASSTHRU --as-root"
+  fi
+  echo "هشدار: su پیدا نشد؛ بدون root ادامه می‌دهم و بسیاری از بخش‌ها خالی می‌شوند."
+  echo
+fi
+
+# -----------------------------------------------------------------------------
+# تشخیص Termux — برای دسترسی به حافظهٔ اشتراکی به termux-setup-storage نیاز است
+# -----------------------------------------------------------------------------
+IN_TERMUX=0
+if [ -n "${PREFIX:-}" ] || [ -d /data/data/com.termux/files/home ]; then
+  IN_TERMUX=1
+fi
 
 GATE=/sys/kernel/thermal_perf
 CPUL=/sys/devices/system/cpu/cpufreq_limit
@@ -304,16 +335,31 @@ if [ -s "$OUT" ]; then
   echo "ذخیره شد: $OUT"
   echo "اندازه  : $SZ بایت ، $LN خط"
   echo
-  echo "برای برداشتن از گوشی:"
-  echo "  adb pull $OUT"
+  if [ "$IN_TERMUX" = "1" ]; then
+    echo "از داخل Termux همین‌جا پیدایش می‌کنی:"
+    echo "  ls -l ~/storage/shared/Download/ | grep thermal"
+    echo
+    echo "اگر می‌خواهی مستقیم بفرستی:"
+    echo "  termux-share -a send $OUT"
+  else
+    echo "برای برداشتن از گوشی:"
+    echo "  adb pull $OUT"
+  fi
   echo
-  echo "اگر می‌خواهی فقط این فایل را بفرستی، همین را ضمیمه کن."
+  echo "این فایل را ضمیمه کن."
 else
   echo "خطا: لاگ نوشته نشد یا خالی است: $OUT"
-  echo "این‌ها را امتحان کن:"
-  echo "  1) با root اجرا کن:  su -c 'sh .../collect-thermal-log.sh'"
-  echo "  2) مسیر دیگر بده:    --dir /data/local/tmp"
-  echo "  3) SELinux موقتاً:   su -c 'setenforce 0'  (بعداً setenforce 1)"
+  echo
+  if [ "$IN_TERMUX" = "1" ]; then
+    echo "در Termux اول یک‌بار این را بزن تا دسترسی حافظه بگیری:"
+    echo "  termux-setup-storage"
+    echo "بعد دوباره اجرا کن."
+    echo
+  fi
+  echo "سایر راه‌ها:"
+  echo "  1) با root اجرا کن:  su -c 'sh $0'"
+  echo "  2) مسیر دیگر بده:    sh $0 --dir /data/local/tmp"
+  echo "  3) SELinux موقتاً:   su -c 'setenforce 0'   (بعداً حتماً setenforce 1)"
   exit 1
 fi
 
