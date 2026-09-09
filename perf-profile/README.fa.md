@@ -133,18 +133,55 @@ adb pull /storage/emulated/0/Download/thermal-log-<تاریخ>.txt
 
 ---
 
-## ۳) API گیت
+## ۳) API گیت و رانندگی خودکار
 
 ```c
 bool thermal_perf_gate_enabled(void);
 bool thermal_perf_gate_blocked(const char *cdev_type);
 int  thermal_perf_gate_register_notifier(struct notifier_block *nb);
 int  thermal_perf_gate_unregister_notifier(struct notifier_block *nb);
+void thermal_perf_gate_set_auto_perf(bool any_perf);   /* از cpufreq.c */
 ```
 
 همه با `EXPORT_SYMBOL_GPL` صادر شده‌اند (`CONFIG_TRIM_UNUSED_KSYMS` خاموش است).
 `thermal_perf_gate_init()` با **`postcore_initcall`** اجرا می‌شود تا قبل از
 thermal subsys آماده باشد.
+
+### سه حالت
+
+| حالت | رفتار |
+|---|---|
+| **`auto`** (پیش‌فرض) | governor ‏`performance` کلید است. تا وقتی حداقل یک policy روی آن است گیت فعال است؛ به محض رفتن آخرین policy به `schedutil` / `sugov_ext` / هر چیز دیگر، گیت غیرفعال می‌شود |
+| `on` | صرف‌نظر از governor، فعالِ پین‌شده |
+| `off` | صرف‌نظر از governor، غیرفعالِ پین‌شده |
+
+```sh
+echo auto > /sys/kernel/thermal_perf/mode    # governor براند (پیش‌فرض)
+echo on   > /sys/kernel/thermal_perf/mode    # دستی روشن
+echo off  > /sys/kernel/thermal_perf/mode    # دستی خاموش
+
+echo 1 > /sys/kernel/thermal_perf/enabled    # معادل mode=on
+echo 0 > /sys/kernel/thermal_perf/enabled    # معادل mode=off
+cat    /sys/kernel/thermal_perf/stats        # وضعیت مؤثر + شمارنده‌ها
+```
+
+مکانیزم: `cpufreq_init_governor()` و `cpufreq_exit_governor()` هر دو
+`cpufreq_perf_gate_sync()` را صدا می‌زنند که **همهٔ CPUهای online را اسکن می‌کند
+و نتیجه را گزارش می‌دهد** (نه دلتای هر policy). این یعنی idempotent است —
+فراخوانی تکراری یا `governor->init()` ناموفق نمی‌تواند گیت را در وضعیت غلط
+قفل کند.
+
+### برگشت‌پذیری کامل
+
+خروج از حالت عملکرد **revert کامل** است، نه ریست به کارخانه:
+
+| مصرف‌کننده | هنگام خروج چه می‌کند |
+|---|---|
+| `cpufreq_limit.c` | snapshot ‏`min_req`/`max_req`/`freq_input` را که در لبهٔ صعودی گرفته بود **دقیقاً** برمی‌گرداند. کلاینت‌های دیگر (Input Booster، userspace maxlock) هرچه قبل از ورود داشتند حفظ می‌شود |
+| `gpuppm_legacy.c` | سه limiter حرارتی به `GPUPPM_DEFAULT_IDX` برمی‌گردند (همان مقدار اولیه‌شان)، سپس `__gpuppm_sort_limit()` + `__gpuppm_limit_effective()` |
+| `thermal_helpers.c` / گاورنرها | فقط clamp متوقف می‌شود؛ هیچ حالتی ریست نمی‌شود |
+
+هیچ‌کدام نیاز به reboot ندارند.
 
 ### allowlist — چیزهایی که عمداً فعال می‌مانند
 
@@ -158,18 +195,16 @@ thermal subsys آماده باشد.
 
 | مسیر | حالت |
 |---|---|
-| `/sys/kernel/thermal_perf/enabled` | `0644` |
+| `/sys/kernel/thermal_perf/mode` | `0644` — `auto` / `on` / `off` |
+| `/sys/kernel/thermal_perf/enabled` | `0644` — وضعیت مؤثر؛ نوشتن = پین کردن |
 | `/sys/kernel/thermal_perf/allow_list` | `0444` |
 | `/sys/kernel/thermal_perf/allow_extra` | `0200` (فقط‌نوشتنی) |
-| `/sys/kernel/thermal_perf/stats` | `0444` |
+| `/sys/kernel/thermal_perf/stats` | `0444` — `enabled` + `mode` + `perf_governor` + شمارنده‌ها |
 
 ```sh
-echo 1 > /sys/kernel/thermal_perf/enabled    # روشن
-cat /sys/kernel/thermal_perf/stats
-echo 0 > /sys/kernel/thermal_perf/enabled    # برگشت به رفتار استوک
+echo schedutil > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+cat /sys/kernel/thermal_perf/stats   # باید enabled=0 شود
 ```
-
-**پیش‌فرض = خاموش.** بوت دستگاه کاملاً استوک است.
 
 ---
 

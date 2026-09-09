@@ -140,7 +140,8 @@ chkp "sysfs: enabled   (0644 خواندنی/نوشتنی)" '__ATTR\(enabled, 064
 chkp "sysfs: allow_list (0444 فقط‌خواندنی)" '__ATTR\(allow_list, 0444, allow_list_show, NULL\)'
 chkp "sysfs: allow_extra (0200 فقط‌نوشتنی)" '__ATTR\(allow_extra, 0200, NULL, allow_extra_store\)'
 chkp "sysfs: stats      (0444 فقط‌خواندنی)" '__ATTR\(stats, 0444, stats_show, NULL\)'
-chkp "پیام SUPPRESSED موقع فعال‌سازی" 'SUPPRESSED \(performance profile engaged\)'
+chkp "پیام ENGAGED موقع فعال‌سازی (با ذکر mode و governor)" 'ENGAGED - software thermal mitigation suppressed'
+chkp "پیام DISENGAGED موقع غیرفعال‌سازی" 'DISENGAGED - previous behaviour restored'
 
 # -----------------------------------------------------------------------------
 sec "6) cpufreq_limit.c — hard-lock سی‌پی‌یو (فایل زنده)"
@@ -176,6 +177,57 @@ N=$(grep -cE '^[[:space:]]if \(thermal_perf_gate_enabled\(\)\)' "$ATM")
                || bad "تعداد نقاط گیت = $N، انتظار ۲"
 
 # -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+sec "8b) رانندگی خودکار با governor (cpufreq.c — داخل پچ ۰۰۰۴)"
+CPUFSRC="$PATCH"
+chkp "cpufreq.c هم جزو پچ است" '^\+\+\+ b/drivers/cpufreq/cpufreq\.c'
+chkp "include <linux/thermal.h> به cpufreq.c اضافه شده" '^\+#include <linux/thermal\.h>'
+chkp "تابع cpufreq_perf_gate_sync() تعریف شده" '^\+static void cpufreq_perf_gate_sync\(void\)'
+chkp "پیمایش با cpufreq_cpu_get_raw (بدون قفل سراسری)" '^\+[[:space:]]+policy = cpufreq_cpu_get_raw\(cpu\);'
+chkp "مقایسهٔ نام governor با \"performance\"" 'strcmp\(policy->governor->name, "performance"\)'
+chkp "گزارش نتیجهٔ کل سیستم، نه دلتای هر policy" '^\+[[:space:]]+thermal_perf_gate_set_auto_perf\(any_perf\);'
+chkp "hook در cpufreq_init_governor (ورود به governor)" '^\+[[:space:]]+cpufreq_perf_gate_sync\(\);'
+N=$(grep -cE '^\+[[:space:]]+cpufreq_perf_gate_sync\(\);' "$PATCH")
+[ "$N" -eq 2 ] && ok "دقیقاً ۲ فراخوانی sync (init و exit) — جفت‌شده" \
+               || bad "تعداد فراخوانی sync = $N، انتظار ۲"
+
+sec "8c) حالت سه‌گانهٔ گیت (auto / on / off)"
+chkp "enum tpg_mode با AUTO/ON/OFF" '^\+enum tpg_mode \{'
+chkp "پیش‌فرض TPG_MODE_AUTO" '^\+static enum tpg_mode tpg_mode = TPG_MODE_AUTO;'
+chkp "tpg_apply_locked() وضعیت مؤثر را حساب می‌کند" '^\+static bool tpg_apply_locked\(bool \*new_val\)'
+chkp "حالت auto از tpg_gov_perf می‌آید" '^\+[[:space:]]+want = tpg_gov_perf;'
+chkp "EXPORT_SYMBOL_GPL(thermal_perf_gate_set_auto_perf)" '^\+EXPORT_SYMBOL_GPL\(thermal_perf_gate_set_auto_perf\);'
+chkp "sysfs: mode (0644 خواندنی/نوشتنی)" '__ATTR\(mode, 0644, mode_show, mode_store\)'
+chkp "mode_store مقدار auto را می‌پذیرد" 'sysfs_streq\(buf, "auto"\)'
+chkp "mode_store مقدار off را می‌پذیرد" 'sysfs_streq\(buf, "off"\)'
+chkp "نوشتن enabled حالت را به ON/OFF پین می‌کند" 'tpg_mode = want \? TPG_MODE_ON : TPG_MODE_OFF;'
+chkp "stats حالت و وضعیت governor را نشان می‌دهد" 'mode=%s perf_governor=%d'
+chkp "thermal.h اعلان set_auto_perf را دارد" '^\+void thermal_perf_gate_set_auto_perf\(bool any_perf\);'
+chkp "thermal.h fallback برای !CONFIG_THERMAL" '^\+static inline void thermal_perf_gate_set_auto_perf\(bool any_perf\) \{ \}'
+
+sec "8d) برگشت‌پذیری کامل cpufreq_limit (save/restore نه پاک‌سازی)"
+chk "آرایهٔ snapshot برای min ذخیره می‌شود" "$CPUF" '^static s32 tpg_saved_min\[DVFS_MAX_ID\]\[2\];'
+chk "آرایهٔ snapshot برای max ذخیره می‌شود" "$CPUF" '^static s32 tpg_saved_max\[DVFS_MAX_ID\]\[2\];'
+chk "پرچم tpg_saved_valid وجود دارد" "$CPUF" '^static bool tpg_saved_valid;'
+chk "مقدار قبلی از pnode.prio خوانده می‌شود" "$CPUF" 'min_req\[id\]\[param\.ltl_cpu_start\]\.pnode\.prio'
+chk "snapshot فقط در لبهٔ صعودی گرفته می‌شود" "$CPUF" 'if \(!tpg_saved_valid\) \{'
+chk "release مقادیر ذخیره‌شده را برمی‌گرداند" "$CPUF" 'tpg_saved_min\[id\]\[0\]\);'
+chk "freq_input هم از snapshot برمی‌گردد" "$CPUF" 'freq_input\[id\]\.min = tpg_saved_fmin\[id\];'
+chk "release پرچم را پاک می‌کند" "$CPUF" 'tpg_saved_valid = false;'
+chk "release بدون snapshot کاری نمی‌کند (idempotent)" "$CPUF" 'if \(!tpg_saved_valid\)'
+# for_each_possible_cpu در کد استوک همین فایل هم هست (خطوط ~392/471/963/1174)،
+# پس باید فقط داخل بدنهٔ تابع release بررسی شود نه کل فایل.
+REL=$(awk '/^static void cpufreq_limit_perf_release_locked\(void\)/,/^}/' "$CPUF")
+if [ -z "$REL" ]; then
+  bad "بدنهٔ cpufreq_limit_perf_release_locked() پیدا نشد"
+elif echo "$REL" | grep -q 'for_each_possible_cpu'; then
+  bad "release هنوز همهٔ CPUها را پاک‌سازی می‌کند (نباید)"
+elif echo "$REL" | grep -q 'FREQ_QOS_MIN_DEFAULT_VALUE'; then
+  bad "release هنوز به DEFAULT ریست می‌کند نه به snapshot"
+else
+  ok "release فقط همان دو CPU را از snapshot برمی‌گرداند"
+fi
+
 sec "9) بررسی‌های «چیزی اشتباهی دست‌نخورده»"
 NOB="$VEND/drivers/misc/mediatek/thermal/common/thermal_zones/mtk_ts_cpu_noBankv2.c"
 TZC="$VEND/drivers/misc/mediatek/thermal/inc/tzcpu_initcfg.h"
@@ -190,6 +242,7 @@ chk "فراخوانی lvts_config_all_tc_hw_protect(trip_temp[0], ...) دست‌
 absc "فایل‌های GKI زنده pristine‌اند (کد گیت ندارند)" "$GKI/drivers/thermal/thermal_helpers.c" 'thermal_perf_gate'
 absc "gov_step_wise.c زنده pristine است" "$GKI/drivers/thermal/gov_step_wise.c" 'thermal_perf_gate'
 absc "gov_power_allocator.c زنده pristine است" "$GKI/drivers/thermal/gov_power_allocator.c" 'thermal_perf_gate'
+absc "cpufreq.c زنده pristine است (hook فقط داخل پچ)" "$GKI/drivers/cpufreq/cpufreq.c" 'thermal_perf_gate|cpufreq_perf_gate_sync'
 [ ! -e "$GKI/drivers/thermal/thermal_perf_gate.c" ] \
   && ok "thermal_perf_gate.c در درخت GKI نیست (درست — فقط داخل پچ است)" \
   || bad "thermal_perf_gate.c در درخت GKI پیدا شد؛ kernel-6.6 باید pristine بماند"

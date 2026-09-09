@@ -1,3 +1,74 @@
+diff --git a/drivers/cpufreq/cpufreq.c b/drivers/cpufreq/cpufreq.c
+index d553a234b..68bd5f990 100644
+--- a/drivers/cpufreq/cpufreq.c
++++ b/drivers/cpufreq/cpufreq.c
+@@ -28,6 +28,7 @@
+ #include <linux/slab.h>
+ #include <linux/suspend.h>
+ #include <linux/syscore_ops.h>
++#include <linux/thermal.h>
+ #include <linux/tick.h>
+ #include <linux/units.h>
+ #include <trace/events/power.h>
+@@ -2413,6 +2414,35 @@ __weak struct cpufreq_governor *cpufreq_fallback_governor(void)
+ 	return NULL;
+ }
+ 
++/*
++ * Report to the thermal performance gate whether any policy currently runs the
++ * "performance" governor.
++ *
++ * The whole set of online CPUs is rescanned on every transition and the
++ * *result* is reported, not a per-policy delta. That makes the report
++ * idempotent: a repeated call, or a governor->init() that fails after
++ * governor->exit() already ran, cannot leave the gate latched in the wrong
++ * state. cpufreq_cpu_get_raw() is a lockless per-CPU lookup, so this is safe
++ * to call from the governor switch path.
++ */
++static void cpufreq_perf_gate_sync(void)
++{
++	struct cpufreq_policy *policy;
++	bool any_perf = false;
++	int cpu;
++
++	for_each_online_cpu(cpu) {
++		policy = cpufreq_cpu_get_raw(cpu);
++		if (policy && policy->governor &&
++		    !strcmp(policy->governor->name, "performance")) {
++			any_perf = true;
++			break;
++		}
++	}
++
++	thermal_perf_gate_set_auto_perf(any_perf);
++}
++
+ static int cpufreq_init_governor(struct cpufreq_policy *policy)
+ {
+ 	int ret;
+@@ -2456,6 +2486,9 @@ static int cpufreq_init_governor(struct cpufreq_policy *policy)
+ 
+ 	policy->strict_target = !!(policy->governor->flags & CPUFREQ_GOV_STRICT_TARGET);
+ 
++	/* Performance governor engaged on this policy - re-evaluate the gate. */
++	cpufreq_perf_gate_sync();
++
+ 	return 0;
+ }
+ 
+@@ -2470,6 +2503,12 @@ static void cpufreq_exit_governor(struct cpufreq_policy *policy)
+ 		policy->governor->exit(policy);
+ 
+ 	module_put(policy->governor->owner);
++
++	/*
++	 * The performance governor has left this policy. Rescan so the gate
++	 * disengages the moment no policy is using it any more.
++	 */
++	cpufreq_perf_gate_sync();
+ }
+ 
+ int cpufreq_start_governor(struct cpufreq_policy *policy)
 diff --git a/drivers/thermal/Makefile b/drivers/thermal/Makefile
 index c934cab30..f2e9e856a 100644
 --- a/drivers/thermal/Makefile
@@ -83,10 +154,10 @@ index 6fdfa7090..18101b049 100644
  
 diff --git a/drivers/thermal/thermal_perf_gate.c b/drivers/thermal/thermal_perf_gate.c
 new file mode 100644
-index 000000000..9d69733da
+index 000000000..991c12a24
 --- /dev/null
 +++ b/drivers/thermal/thermal_perf_gate.c
-@@ -0,0 +1,284 @@
+@@ -0,0 +1,450 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * thermal_perf_gate.c - Performance-profile gate for the thermal framework.
@@ -115,15 +186,34 @@ index 000000000..9d69733da
 + * Battery, charger and PMIC protection therefore stays intact, which is the
 + * whole point of keeping the allowlist.
 + *
++ * How it is driven
++ * ----------------
++ * Three modes, selected through the "mode" node:
++ *
++ *   auto (default)  the "performance" cpufreq governor is the switch. The gate
++ *                   engages while at least one policy runs that governor and
++ *                   disengages as soon as the last one moves to schedutil,
++ *                   sugov_ext or anything else.
++ *   on              pinned engaged regardless of governor
++ *   off             pinned disengaged regardless of governor
++ *
++ * Disengaging is a full revert, not a partial one. Every consumer restores the
++ * exact state it held before the gate was engaged: the cpufreq limiter puts
++ * back the per-client freq_qos requests it snapshotted on the way in, the GPU
++ * DVFS limiters go back to their reset index, and the thermal framework simply
++ * stops clamping cooling-device states. Nothing is reset to a factory default
++ * and nothing requires a reboot.
++ *
 + * Interface
 + * ---------
-+ *   /sys/kernel/thermal_perf/enabled        0 = stock behaviour, 1 = gated
++ *   /sys/kernel/thermal_perf/mode           auto | on | off
++ *   /sys/kernel/thermal_perf/enabled        effective state; writing 1/0 pins
++ *                                           the mode to on/off
 + *   /sys/kernel/thermal_perf/allow_extra    append a cooling-device name
 + *                                           substring to the allowlist
 + *   /sys/kernel/thermal_perf/allow_list     show the active allowlist
-+ *   /sys/kernel/thermal_perf/stats          suppression counters
-+ *
-+ * Default is 0 (stock). Nothing changes until userspace asks for it.
++ *   /sys/kernel/thermal_perf/stats          mode, governor state and
++ *                                           suppression counters
 + */
 +
 +#include <linux/kernel.h>
@@ -150,6 +240,26 @@ index 000000000..9d69733da
 +static u64 tpg_allowed;
 +
 +/*
++ * How the gate is driven.
++ *
++ * TPG_MODE_AUTO (the default) makes the "performance" cpufreq governor the
++ * switch: the gate engages while at least one policy runs that governor and
++ * disengages as soon as the last one leaves it, for schedutil, sugov_ext or
++ * anything else. TPG_MODE_ON / TPG_MODE_OFF are manual overrides.
++ *
++ * tpg_enabled is the *effective* state consumers read; tpg_gov_perf is only
++ * the governor-derived input to it.
++ */
++enum tpg_mode {
++	TPG_MODE_AUTO = 0,
++	TPG_MODE_ON,
++	TPG_MODE_OFF,
++};
++
++static enum tpg_mode tpg_mode = TPG_MODE_AUTO;
++static bool tpg_gov_perf;
++
++/*
 + * Notifier chain fired when the gate is engaged or disengaged, so that
 + * out-of-tree/vendor consumers (MTK cpufreq limit driver, gpufreq, GED, Mali
 + * devfreq) can lock or release their frequency bounds in response to the same
@@ -168,6 +278,75 @@ index 000000000..9d69733da
 +	return atomic_notifier_chain_unregister(&tpg_chain, nb);
 +}
 +EXPORT_SYMBOL_GPL(thermal_perf_gate_unregister_notifier);
++
++/*
++ * Recompute the effective state. Caller must hold tpg_lock.
++ *
++ * Returns true when the state actually changed, so the caller can fire the
++ * notifier chain outside the lock (consumer callbacks take their own locks).
++ */
++static bool tpg_apply_locked(bool *new_val)
++{
++	bool want;
++
++	switch (tpg_mode) {
++	case TPG_MODE_ON:
++		want = true;
++		break;
++	case TPG_MODE_OFF:
++		want = false;
++		break;
++	default:
++		want = tpg_gov_perf;
++		break;
++	}
++
++	if (want == tpg_enabled)
++		return false;
++
++	tpg_enabled = want;
++	*new_val = want;
++
++	return true;
++}
++
++static void tpg_notify(bool val)
++{
++	pr_info("thermal_perf_gate: %s (mode=%s, performance governor=%s)\n",
++		val ? "ENGAGED - software thermal mitigation suppressed"
++		    : "DISENGAGED - previous behaviour restored",
++		tpg_mode == TPG_MODE_ON ? "on" :
++		tpg_mode == TPG_MODE_OFF ? "off" : "auto",
++		tpg_gov_perf ? "yes" : "no");
++
++	atomic_notifier_call_chain(&tpg_chain, val ? 1 : 0, NULL);
++}
++
++/**
++ * thermal_perf_gate_set_auto_perf - governor-derived input to the gate
++ * @any_perf: true while at least one cpufreq policy uses the "performance"
++ *	      governor
++ *
++ * Called by cpufreq on every governor transition with the *recomputed* state
++ * of the whole system rather than a per-policy delta, so the value is
++ * idempotent: a repeated or missed call cannot leave the gate stuck.
++ *
++ * Has no effect while the manual override is set to "on" or "off".
++ */
++void thermal_perf_gate_set_auto_perf(bool any_perf)
++{
++	unsigned long flags;
++	bool notify = false, val = false;
++
++	spin_lock_irqsave(&tpg_lock, flags);
++	tpg_gov_perf = any_perf;
++	notify = tpg_apply_locked(&val);
++	spin_unlock_irqrestore(&tpg_lock, flags);
++
++	if (notify)
++		tpg_notify(val);
++}
++EXPORT_SYMBOL_GPL(thermal_perf_gate_set_auto_perf);
 +
 +/*
 + * Cooling devices that must keep working even with the gate engaged. Matched
@@ -255,19 +434,68 @@ index 000000000..9d69733da
 +static ssize_t enabled_store(struct kobject *kobj, struct kobj_attribute *attr,
 +			     const char *buf, size_t count)
 +{
-+	bool val;
++	unsigned long flags;
++	bool notify = false, val = false, want;
 +	int ret;
 +
-+	ret = kstrtobool(buf, &val);
++	ret = kstrtobool(buf, &want);
 +	if (ret)
 +		return ret;
 +
-+	WRITE_ONCE(tpg_enabled, val);
-+	pr_info("thermal_perf_gate: software thermal mitigation %s\n",
-+		val ? "SUPPRESSED (performance profile engaged)"
-+		    : "restored (stock behaviour)");
++	/*
++	 * Writing enabled is a manual override: 1 pins the gate on, 0 pins it
++	 * off, and both stop the governor from driving it. Write "auto" to
++	 * mode to hand control back.
++	 */
++	spin_lock_irqsave(&tpg_lock, flags);
++	tpg_mode = want ? TPG_MODE_ON : TPG_MODE_OFF;
++	notify = tpg_apply_locked(&val);
++	spin_unlock_irqrestore(&tpg_lock, flags);
 +
-+	atomic_notifier_call_chain(&tpg_chain, val ? 1 : 0, NULL);
++	if (notify)
++		tpg_notify(val);
++
++	return count;
++}
++
++static const char * const tpg_mode_name[] = { "auto", "on", "off" };
++
++static ssize_t mode_show(struct kobject *kobj, struct kobj_attribute *attr,
++			 char *buf)
++{
++	unsigned long flags;
++	ssize_t len;
++
++	spin_lock_irqsave(&tpg_lock, flags);
++	len = sysfs_emit(buf, "%s\n", tpg_mode_name[tpg_mode]);
++	spin_unlock_irqrestore(&tpg_lock, flags);
++
++	return len;
++}
++
++static ssize_t mode_store(struct kobject *kobj, struct kobj_attribute *attr,
++			  const char *buf, size_t count)
++{
++	unsigned long flags;
++	enum tpg_mode m;
++	bool notify = false, val = false;
++
++	if (sysfs_streq(buf, "auto"))
++		m = TPG_MODE_AUTO;
++	else if (sysfs_streq(buf, "on"))
++		m = TPG_MODE_ON;
++	else if (sysfs_streq(buf, "off"))
++		m = TPG_MODE_OFF;
++	else
++		return -EINVAL;
++
++	spin_lock_irqsave(&tpg_lock, flags);
++	tpg_mode = m;
++	notify = tpg_apply_locked(&val);
++	spin_unlock_irqrestore(&tpg_lock, flags);
++
++	if (notify)
++		tpg_notify(val);
 +
 +	return count;
 +}
@@ -324,6 +552,8 @@ index 000000000..9d69733da
 +			  char *buf)
 +{
 +	unsigned long flags;
++	enum tpg_mode m;
++	bool gov;
 +	u64 sup, alw;
 +	int n;
 +
@@ -331,10 +561,14 @@ index 000000000..9d69733da
 +	sup = tpg_suppressed;
 +	alw = tpg_allowed;
 +	n = tpg_nextra;
++	m = tpg_mode;
++	gov = tpg_gov_perf;
 +	spin_unlock_irqrestore(&tpg_lock, flags);
 +
-+	return sysfs_emit(buf, "enabled=%d suppressed=%llu allowed=%llu extra=%d\n",
-+			  READ_ONCE(tpg_enabled) ? 1 : 0, sup, alw, n);
++	return sysfs_emit(buf,
++			  "enabled=%d mode=%s perf_governor=%d suppressed=%llu allowed=%llu extra=%d\n",
++			  READ_ONCE(tpg_enabled) ? 1 : 0, tpg_mode_name[m],
++			  gov ? 1 : 0, sup, alw, n);
 +}
 +
 +static struct kobj_attribute tpg_attr_enabled =
@@ -345,9 +579,12 @@ index 000000000..9d69733da
 +	__ATTR(allow_extra, 0200, NULL, allow_extra_store);
 +static struct kobj_attribute tpg_attr_stats =
 +	__ATTR(stats, 0444, stats_show, NULL);
++static struct kobj_attribute tpg_attr_mode =
++	__ATTR(mode, 0644, mode_show, mode_store);
 +
 +static struct attribute *tpg_attrs[] = {
 +	&tpg_attr_enabled.attr,
++	&tpg_attr_mode.attr,
 +	&tpg_attr_allow_list.attr,
 +	&tpg_attr_allow_extra.attr,
 +	&tpg_attr_stats.attr,
@@ -372,10 +609,10 @@ index 000000000..9d69733da
 +}
 +postcore_initcall(thermal_perf_gate_init);
 diff --git a/include/linux/thermal.h b/include/linux/thermal.h
-index 2b25979ec..e20960467 100644
+index 2b25979ec..87a5e136d 100644
 --- a/include/linux/thermal.h
 +++ b/include/linux/thermal.h
-@@ -370,6 +370,20 @@ int thermal_zone_get_offset(struct thermal_zone_device *tz);
+@@ -370,6 +370,21 @@ int thermal_zone_get_offset(struct thermal_zone_device *tz);
  int thermal_zone_device_enable(struct thermal_zone_device *tz);
  int thermal_zone_device_disable(struct thermal_zone_device *tz);
  void thermal_zone_device_critical(struct thermal_zone_device *tz);
@@ -393,15 +630,17 @@ index 2b25979ec..e20960467 100644
 +bool thermal_perf_gate_blocked(const char *cdev_type);
 +int thermal_perf_gate_register_notifier(struct notifier_block *nb);
 +int thermal_perf_gate_unregister_notifier(struct notifier_block *nb);
++void thermal_perf_gate_set_auto_perf(bool any_perf);
  #else
  static inline struct thermal_zone_device *thermal_zone_device_register_with_trips(
  					const char *type,
-@@ -444,6 +458,14 @@ static inline int thermal_zone_device_enable(struct thermal_zone_device *tz)
+@@ -444,6 +459,15 @@ static inline int thermal_zone_device_enable(struct thermal_zone_device *tz)
  
  static inline int thermal_zone_device_disable(struct thermal_zone_device *tz)
  { return -ENODEV; }
 +
 +static inline bool thermal_perf_gate_enabled(void) { return false; }
++static inline void thermal_perf_gate_set_auto_perf(bool any_perf) { }
 +static inline bool thermal_perf_gate_blocked(const char *cdev_type)
 +{ return false; }
 +static inline int thermal_perf_gate_register_notifier(struct notifier_block *nb)

@@ -525,6 +525,21 @@ static void cpufreq_limit_process_max_freq(unsigned int id, int max_freq)
  *   - the thermal_perf_gate notifier, so engaging the gate locks immediately
  *     and disengaging it releases immediately, with no reboot.
  * --------------------------------------------------------------------- */
+/*
+ * Snapshot of every request the hard lock overwrites, so that disengaging the
+ * gate puts each client back exactly where it was instead of wiping it.
+ *
+ * Only the two cluster-representative CPUs per id are ever written by the hard
+ * lock, so only those need saving. The snapshot is taken on the rising edge
+ * and cleared on release; while the gate is engaged _set_freq_limit() discards
+ * incoming requests without writing them, so the snapshot stays accurate.
+ */
+static s32 tpg_saved_min[DVFS_MAX_ID][2];
+static s32 tpg_saved_max[DVFS_MAX_ID][2];
+static int tpg_saved_fmin[DVFS_MAX_ID];
+static int tpg_saved_fmax[DVFS_MAX_ID];
+static bool tpg_saved_valid;
+
 static void cpufreq_limit_perf_hardlock_locked(void)
 {
 	unsigned int id;
@@ -537,6 +552,20 @@ static void cpufreq_limit_perf_hardlock_locked(void)
 		 */
 		if (IS_ERR_OR_NULL(min_req[id]) || IS_ERR_OR_NULL(max_req[id]))
 			continue;
+
+		/* Rising edge only - never re-snapshot our own values. */
+		if (!tpg_saved_valid) {
+			tpg_saved_min[id][0] =
+				min_req[id][param.ltl_cpu_start].pnode.prio;
+			tpg_saved_min[id][1] =
+				min_req[id][param.big_cpu_start].pnode.prio;
+			tpg_saved_max[id][0] =
+				max_req[id][param.ltl_cpu_start].pnode.prio;
+			tpg_saved_max[id][1] =
+				max_req[id][param.big_cpu_start].pnode.prio;
+			tpg_saved_fmin[id] = freq_input[id].min;
+			tpg_saved_fmax[id] = freq_input[id].max;
+		}
 
 		freq_qos_update_request(&min_req[id][param.ltl_cpu_start],
 					param.l_fmax);
@@ -551,31 +580,47 @@ static void cpufreq_limit_perf_hardlock_locked(void)
 		freq_input[id].max = LIMIT_RELEASE;
 	}
 
-	pr_info("%s: hard-locked little=%u big=%u (gate engaged)\n",
-		__func__, param.l_fmax, param.b_fmax);
+	if (!tpg_saved_valid) {
+		tpg_saved_valid = true;
+		pr_info("%s: hard-locked little=%u big=%u (gate engaged)\n",
+			__func__, param.l_fmax, param.b_fmax);
+	}
 }
 
+/*
+ * Restore the exact pre-engagement requests rather than resetting to the
+ * freq_qos defaults: other clients (input booster, userspace maxlock) keep
+ * whatever they had asked for before performance mode was entered.
+ */
 static void cpufreq_limit_perf_release_locked(void)
 {
 	unsigned int id;
-	int i;
+
+	if (!tpg_saved_valid)
+		return;
 
 	for (id = 0; id < DVFS_MAX_ID; id++) {
 		if (IS_ERR_OR_NULL(min_req[id]) || IS_ERR_OR_NULL(max_req[id]))
 			continue;
-		for_each_possible_cpu(i) {
-			freq_qos_update_request(&min_req[id][i],
-						FREQ_QOS_MIN_DEFAULT_VALUE);
-			freq_qos_update_request(&max_req[id][i],
-						FREQ_QOS_MAX_DEFAULT_VALUE);
-		}
-		freq_input[id].min = 0;
-		freq_input[id].max = 0;
+
+		freq_qos_update_request(&min_req[id][param.ltl_cpu_start],
+					tpg_saved_min[id][0]);
+		freq_qos_update_request(&min_req[id][param.big_cpu_start],
+					tpg_saved_min[id][1]);
+		freq_qos_update_request(&max_req[id][param.ltl_cpu_start],
+					tpg_saved_max[id][0]);
+		freq_qos_update_request(&max_req[id][param.big_cpu_start],
+					tpg_saved_max[id][1]);
+
+		freq_input[id].min = tpg_saved_fmin[id];
+		freq_input[id].max = tpg_saved_fmax[id];
 	}
 
-	pr_info("%s: all DVFS limits released (gate disengaged)\n", __func__);
-}
+	tpg_saved_valid = false;
 
+	pr_info("%s: previous DVFS requests restored (gate disengaged)\n",
+		__func__);
+}
 static int cpufreq_limit_perf_gate_notify(struct notifier_block *nb,
 					  unsigned long action, void *data)
 {
