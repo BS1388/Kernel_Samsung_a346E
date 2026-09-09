@@ -13,6 +13,7 @@
 #include <linux/seq_file.h>
 #include <linux/time.h>
 #include <linux/jiffies.h>
+#include <linux/thermal.h>
 #include <mach/mtk_thermal.h> /* needed by tscpu_settings.h */
 #include <tscpu_settings.h> /* needed by tscpu_warn */
 #include <ap_thermal_limit.h>
@@ -185,6 +186,30 @@ struct apthermolmt_user *handle, unsigned int limit)
 #error "handle this!"
 #endif
 
+	/*
+	 * Performance-profile gate.
+	 *
+	 * This funnel matters because the ATM/DTM throttling loop never goes
+	 * through the Linux cooling-device framework: it is driven by
+	 * atm_hrtimer -> atm_loop() -> the krtatm thread ->
+	 * _adaptive_power_ppb() -> phpb_calc_total() -> P_adaptive() ->
+	 * set_adaptive_cpu_power_limit() -> here. Nothing upstream of this
+	 * point implements set_cur_state(), so thermal_cdev_set_cur_state()
+	 * cannot intercept it, and because the result is a PPM power budget it
+	 * also bypasses freq_qos (and therefore the cpufreq_limit hard lock).
+	 *
+	 * Forcing this file's own "no limit" sentinel means the budget pushed
+	 * to mt_ppm_cpu_thermal_protect() is 0 == unlimited. The prev != curr
+	 * test below still fires once, so a throttle that was already applied
+	 * before the gate engaged is actively cleared rather than left stale.
+	 *
+	 * Battery throttling is unaffected: LIMIT_BATT_OC / low-battery use the
+	 * separate pwrthro_policy in mtk_ppm_policy_pwr_thro.c, not the
+	 * thermal_policy fed from here.
+	 */
+	if (thermal_perf_gate_enabled())
+		final_limit = 0x7FFFFFFF;
+
 	apthermolmt_prev_cpu_pwr_lim = apthermolmt_curr_cpu_pwr_lim;
 	apthermolmt_curr_cpu_pwr_lim = final_limit;
 
@@ -335,6 +360,10 @@ struct apthermolmt_user *handle, unsigned int limit)
 #else
 #error "handle this!"
 #endif
+
+	/* Performance-profile gate - same rationale as the CPU path above. */
+	if (thermal_perf_gate_enabled())
+		final_limit = 0x7FFFFFFF;
 
 	apthermolmt_prev_gpu_pwr_lim = apthermolmt_curr_gpu_pwr_lim;
 	apthermolmt_curr_gpu_pwr_lim = final_limit;
