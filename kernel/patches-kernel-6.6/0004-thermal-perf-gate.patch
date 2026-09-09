@@ -1,6 +1,5 @@
-diff --git a/drivers/cpufreq/cpufreq.c b/drivers/cpufreq/cpufreq.c
-index d553a234b..68bd5f990 100644
 --- a/drivers/cpufreq/cpufreq.c
+index d553a234b..68bd5f990 100644
 +++ b/drivers/cpufreq/cpufreq.c
 @@ -28,6 +28,7 @@
  #include <linux/slab.h>
@@ -10,7 +9,7 @@ index d553a234b..68bd5f990 100644
  #include <linux/tick.h>
  #include <linux/units.h>
  #include <trace/events/power.h>
-@@ -2413,6 +2414,35 @@ __weak struct cpufreq_governor *cpufreq_fallback_governor(void)
+@@ -2413,6 +2414,43 @@
  	return NULL;
  }
  
@@ -24,8 +23,14 @@ index d553a234b..68bd5f990 100644
 + * governor->exit() already ran, cannot leave the gate latched in the wrong
 + * state. cpufreq_cpu_get_raw() is a lockless per-CPU lookup, so this is safe
 + * to call from the governor switch path.
++ *
++ * @excluded is skipped. cpufreq_exit_governor() runs while policy->governor
++ * still points at the governor that is being removed, so counting it would
++ * keep the gate latched after the policy is torn down - and on the removal
++ * path (cpufreq_remove_dev) no ->init() follows that could correct the
++ * picture. Pass NULL to scan every online policy.
 + */
-+static void cpufreq_perf_gate_sync(void)
++static void cpufreq_perf_gate_sync_excluding(struct cpufreq_policy *excluded)
 +{
 +	struct cpufreq_policy *policy;
 +	bool any_perf = false;
@@ -33,6 +38,8 @@ index d553a234b..68bd5f990 100644
 +
 +	for_each_online_cpu(cpu) {
 +		policy = cpufreq_cpu_get_raw(cpu);
++		if (policy == excluded)
++			continue;
 +		if (policy && policy->governor &&
 +		    !strcmp(policy->governor->name, "performance")) {
 +			any_perf = true;
@@ -46,26 +53,28 @@ index d553a234b..68bd5f990 100644
  static int cpufreq_init_governor(struct cpufreq_policy *policy)
  {
  	int ret;
-@@ -2456,6 +2486,9 @@ static int cpufreq_init_governor(struct cpufreq_policy *policy)
+@@ -2456,6 +2494,9 @@
  
  	policy->strict_target = !!(policy->governor->flags & CPUFREQ_GOV_STRICT_TARGET);
  
 +	/* Performance governor engaged on this policy - re-evaluate the gate. */
-+	cpufreq_perf_gate_sync();
++	cpufreq_perf_gate_sync_excluding(NULL);
 +
  	return 0;
  }
  
-@@ -2470,6 +2503,12 @@ static void cpufreq_exit_governor(struct cpufreq_policy *policy)
+@@ -2470,6 +2511,14 @@
  		policy->governor->exit(policy);
  
  	module_put(policy->governor->owner);
 +
 +	/*
-+	 * The performance governor has left this policy. Rescan so the gate
-+	 * disengages the moment no policy is using it any more.
++	 * The performance governor has left this policy. Rescan, skipping this
++	 * one: policy->governor still points at the exiting governor here, and
++	 * on the removal path no new governor is initialised afterwards, so
++	 * counting it would keep the gate (and any hard locks) engaged forever.
 +	 */
-+	cpufreq_perf_gate_sync();
++	cpufreq_perf_gate_sync_excluding(policy);
  }
  
  int cpufreq_start_governor(struct cpufreq_policy *policy)

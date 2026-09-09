@@ -213,12 +213,14 @@ sec "8b) رانندگی خودکار با governor (cpufreq.c — داخل پچ 
 CPUFSRC="$PATCH"
 chkp "cpufreq.c هم جزو پچ است" '^\+\+\+ b/drivers/cpufreq/cpufreq\.c'
 chkp "include <linux/thermal.h> به cpufreq.c اضافه شده" '^\+#include <linux/thermal\.h>'
-chkp "تابع cpufreq_perf_gate_sync() تعریف شده" '^\+static void cpufreq_perf_gate_sync\(void\)'
+chkp "تابع cpufreq_perf_gate_sync_excluding() تعریف شده" '^\+static void cpufreq_perf_gate_sync_excluding\(struct cpufreq_policy \*excluded\)'
+chkp "policy خروجی از پیمایش مستثنا می‌شود (جلوگیری از قفل‌ماندن پس از remove)" '^\+[[:space:]]+if \(policy == excluded\)'
 chkp "پیمایش با cpufreq_cpu_get_raw (بدون قفل سراسری)" '^\+[[:space:]]+policy = cpufreq_cpu_get_raw\(cpu\);'
 chkp "مقایسهٔ نام governor با \"performance\"" 'strcmp\(policy->governor->name, "performance"\)'
 chkp "گزارش نتیجهٔ کل سیستم، نه دلتای هر policy" '^\+[[:space:]]+thermal_perf_gate_set_auto_perf\(any_perf\);'
-chkp "hook در cpufreq_init_governor (ورود به governor)" '^\+[[:space:]]+cpufreq_perf_gate_sync\(\);'
-N=$(grep -cE '^\+[[:space:]]+cpufreq_perf_gate_sync\(\);' "$PATCH")
+chkp "hook در cpufreq_init_governor (ورود به governor — کل سیستم)" '^\+[[:space:]]+cpufreq_perf_gate_sync_excluding\(NULL\);'
+chkp "hook در cpufreq_exit_governor (خروج — خود policy مستثنا)" '^\+[[:space:]]+cpufreq_perf_gate_sync_excluding\(policy\);'
+N=$(grep -cE '^\+[[:space:]]+cpufreq_perf_gate_sync_excluding\((NULL|policy)\);' "$PATCH")
 [ "$N" -eq 2 ] && ok "دقیقاً ۲ فراخوانی sync (init و exit) — جفت‌شده" \
                || bad "تعداد فراخوانی sync = $N، انتظار ۲"
 
