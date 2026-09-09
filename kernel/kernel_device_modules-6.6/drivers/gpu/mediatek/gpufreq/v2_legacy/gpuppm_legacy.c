@@ -51,9 +51,6 @@ static DEFINE_MUTEX(gpuppm_lock);
  */
 static bool gpuppm_gate_neutralized(enum gpuppm_limiter limiter)
 {
-	if (!thermal_perf_gate_enabled())
-		return false;
-
 	switch (limiter) {
 	case LIMIT_THERMAL_AP:
 	case LIMIT_THERMAL_EB:
@@ -616,15 +613,37 @@ int gpuppm_set_limit(enum gpufreq_target target, enum gpuppm_limiter limiter,
 	 * SRAMRC / powerhal / ...) still runs the normal path, and re-asserts
 	 * the peak pin first so the thermal entries cannot creep back in.
 	 */
-	if (thermal_perf_gate_enabled()) {
-		if (gpuppm_gate_neutralized(limiter)) {
+	/*
+	 * Permanent: a limit request from the thermal or power-budget limiters
+	 * is discarded outright and its table entry is left at
+	 * GPUPPM_DEFAULT_IDX, which __gpuppm_sort_limit() skips - so those
+	 * limiters can never contribute a ceiling or a floor, in performance
+	 * mode or out of it.
+	 */
+	if (thermal_perf_gate_thermal_off() && gpuppm_gate_neutralized(limiter)) {
+		limit_table[limiter].ceiling = GPUPPM_DEFAULT_IDX;
+		limit_table[limiter].floor = GPUPPM_DEFAULT_IDX;
+
+		if (thermal_perf_gate_enabled())
 			gpuppm_gate_force_peak(target, limit_table, opp_num,
 						instant_dvfs);
-			mutex_unlock(&gpuppm_lock);
-			goto done;
+		else {
+			__gpuppm_sort_limit(target);
+			if (instant_dvfs)
+				__gpuppm_limit_effective(target);
 		}
-		gpuppm_gate_force_peak(target, limit_table, opp_num, false);
+
+		mutex_unlock(&gpuppm_lock);
+		goto done;
 	}
+
+	/*
+	 * Conditional: performance mode additionally pins the GPU to its peak
+	 * OPP. Outside performance mode this is skipped entirely and ordinary
+	 * GPU DVFS resumes - the thermal limiters stay neutralised either way.
+	 */
+	if (thermal_perf_gate_enabled())
+		gpuppm_gate_force_peak(target, limit_table, opp_num, false);
 
 	/* convert input limit info to OPP index */
 	ret = __gpuppm_convert_limit_to_idx(target, limiter,
@@ -838,9 +857,13 @@ void gpuppm_set_shared_status(struct gpufreq_shared_status *shared_status)
 }
 
 /*
- * Restore the neutralised limiters to GPUPPM_DEFAULT_IDX, which is what
- * gpuppm_set_limit() writes for a GPUPPM_RESET_IDX request - done inline
- * because gpuppm_set_limit() takes gpuppm_lock and the caller holds it.
+ * Take the peak pin off when performance mode ends.
+ *
+ * The three thermal limiters go to GPUPPM_DEFAULT_IDX, which is both their
+ * table initialiser and what __gpuppm_sort_limit() skips. That is not "restoring
+ * the old thermal limit" - thermal limiting is permanently off, so DEFAULT_IDX
+ * is the correct resting state. It is done inline because gpuppm_set_limit()
+ * takes gpuppm_lock and the caller already holds it.
  */
 static void gpuppm_gate_release(struct gpuppm_limit_info *limit_table)
 {
@@ -863,7 +886,7 @@ static int gpuppm_gate_notify(struct notifier_block *nb, unsigned long action,
 		if (g_stack.opp_num > 0)
 			gpuppm_gate_force_peak(TARGET_STACK, g_stack_limit_table,
 						g_stack.opp_num, true);
-		GPUFREQ_LOGI("[GATE] GPU DVFS pinned to peak OPP");
+		GPUFREQ_LOGI("[GATE] performance mode: GPU pinned to peak OPP");
 	} else {
 		gpuppm_gate_release(g_gpu_limit_table);
 		if (g_stack.opp_num > 0)
@@ -874,7 +897,7 @@ static int gpuppm_gate_notify(struct notifier_block *nb, unsigned long action,
 			__gpuppm_sort_limit(TARGET_STACK);
 			__gpuppm_limit_effective(TARGET_STACK);
 		}
-		GPUFREQ_LOGI("[GATE] GPU DVFS limits released");
+		GPUFREQ_LOGI("[GATE] performance mode off: GPU DVFS released (thermal stays neutralised)");
 	}
 
 	mutex_unlock(&gpuppm_lock);

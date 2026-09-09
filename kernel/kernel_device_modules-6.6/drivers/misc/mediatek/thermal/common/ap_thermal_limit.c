@@ -207,7 +207,7 @@ struct apthermolmt_user *handle, unsigned int limit)
 	 * separate pwrthro_policy in mtk_ppm_policy_pwr_thro.c, not the
 	 * thermal_policy fed from here.
 	 */
-	if (thermal_perf_gate_enabled())
+	if (thermal_perf_gate_thermal_off())
 		final_limit = 0x7FFFFFFF;
 
 	apthermolmt_prev_cpu_pwr_lim = apthermolmt_curr_cpu_pwr_lim;
@@ -362,7 +362,7 @@ struct apthermolmt_user *handle, unsigned int limit)
 #endif
 
 	/* Performance-profile gate - same rationale as the CPU path above. */
-	if (thermal_perf_gate_enabled())
+	if (thermal_perf_gate_thermal_off())
 		final_limit = 0x7FFFFFFF;
 
 	apthermolmt_prev_gpu_pwr_lim = apthermolmt_curr_gpu_pwr_lim;

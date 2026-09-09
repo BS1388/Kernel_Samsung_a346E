@@ -133,19 +133,38 @@ adb pull /storage/emulated/0/Download/thermal-log-<تاریخ>.txt
 
 ---
 
-## ۳) API گیت و رانندگی خودکار
+## ۳) دو سیاست مستقل
+
+این مهم‌ترین نکتهٔ معماری است — **این دو از هم جدا هستند:**
+
+| | سیاست | وابسته به governor؟ |
+|---|---|---|
+| **۱. سرکوب حرارتی** | **دائمی و بی‌قید.** کرنل هرگز به‌خاطر دما throttle یا downclock نمی‌کند | ❌ نه — همیشه خاموش |
+| **۲. قفل فرکانس** | CPU (big + LITTLE) و GPU روی سقف سخت‌افزاری | ✅ بله — فقط در حالت عملکرد |
+
+یعنی خروج از حالت عملکرد، DVFS معمولی را برمی‌گرداند ولی **throttle حرارتی را برنمی‌گرداند.**
 
 ```c
-bool thermal_perf_gate_enabled(void);
-bool thermal_perf_gate_blocked(const char *cdev_type);
+bool thermal_perf_gate_thermal_off(void);   /* همیشه true — سیاست ۱ */
+bool thermal_perf_gate_enabled(void);       /* حالت عملکرد — سیاست ۲ */
+bool thermal_perf_gate_blocked(const char *cdev_type);  /* بی‌قید، جز allowlist */
 int  thermal_perf_gate_register_notifier(struct notifier_block *nb);
 int  thermal_perf_gate_unregister_notifier(struct notifier_block *nb);
 void thermal_perf_gate_set_auto_perf(bool any_perf);   /* از cpufreq.c */
 ```
 
-همه با `EXPORT_SYMBOL_GPL` صادر شده‌اند (`CONFIG_TRIM_UNUSED_KSYMS` خاموش است).
-`thermal_perf_gate_init()` با **`postcore_initcall`** اجرا می‌شود تا قبل از
-thermal subsys آماده باشد.
+### استثناهای ایمنی — عمداً و غیرقابل‌خاموش‌کردن
+
+`thermal_perf_gate_blocked()` بی‌قید است **جز** برای allowlist ایمنی. این‌ها هیچ‌وقت
+سرکوب نمی‌شوند و کلید خاموش هم ندارند:
+
+```
+bcct · charger · batt · shutdown · kshutdown · sysrst
+```
+
+یعنی محدودسازی جریان شارژ باتری، خاموشی حرارتی و ریست سیستم سر جایشان‌اند،
+و کف خاموشی سخت‌افزاری LVTS ‏(۱۱۷ °C) دست‌نخورده است. «خاموش‌کردن همهٔ throttle»
+به downclock شدن فرکانس اشاره دارد، نه به محافظت باتری یا خاموشی اضطراری.
 
 ### سه حالت
 

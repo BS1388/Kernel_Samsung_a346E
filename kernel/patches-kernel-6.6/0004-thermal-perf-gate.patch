@@ -154,21 +154,34 @@ index 6fdfa7090..18101b049 100644
  
 diff --git a/drivers/thermal/thermal_perf_gate.c b/drivers/thermal/thermal_perf_gate.c
 new file mode 100644
-index 000000000..991c12a24
+index 000000000..f58411377
 --- /dev/null
 +++ b/drivers/thermal/thermal_perf_gate.c
-@@ -0,0 +1,450 @@
+@@ -0,0 +1,482 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * thermal_perf_gate.c - Performance-profile gate for the thermal framework.
 + *
 + * What this is
 + * ------------
-+ * A single, runtime-switchable gate that suppresses *software* thermal
-+ * mitigation. When engaged, every cooling-device state request that a governor
-+ * produces is clamped to the least-restrictive state (state 0) before it can
-+ * reach hardware, so no frequency cap, no current throttle and no backlight
-+ * reduction is ever applied by the thermal framework.
++ * Two independent policies living in one file.
++ *
++ * 1. Software thermal mitigation is suppressed PERMANENTLY and
++ *    unconditionally. Every cooling-device state request a governor produces
++ *    is clamped to the least-restrictive state (state 0) before it can reach
++ *    hardware, whichever cpufreq governor is active. No frequency cap, no
++ *    current throttle and no backlight reduction is ever applied by the
++ *    thermal framework, and the kernel never downclocks because of
++ *    temperature.
++ *
++ * 2. Frequency locking is CONDITIONAL. Hard-locking the CPU clusters and the
++ *    GPU to their hardware maximums only happens in performance mode, which by
++ *    default follows the "performance" cpufreq governor. Leaving that governor
++ *    releases the locks and normal dynamic scaling resumes immediately, with
++ *    no reboot.
++ *
++ * Splitting the two matters: exiting performance mode restores ordinary DVFS
++ * but does NOT bring thermal throttling back.
 + *
 + * What this is NOT
 + * ----------------
@@ -406,9 +419,14 @@ index 000000000..991c12a24
 +	unsigned long flags;
 +	bool blocked;
 +
-+	if (!READ_ONCE(tpg_enabled))
-+		return false;
-+
++	/*
++	 * Permanent. Software thermal mitigation is suppressed unconditionally,
++	 * independently of the performance mode below and of which cpufreq
++	 * governor is active. The safety allowlist is the only exception and is
++	 * deliberately not switchable: battery charge-current throttling,
++	 * thermal shutdown and system reset keep working in full, and the SoC's
++	 * hardware emergency-shutdown threshold is never touched.
++	 */
 +	spin_lock_irqsave(&tpg_lock, flags);
 +	blocked = !tpg_type_allowed(cdev_type);
 +	if (blocked)
@@ -420,6 +438,20 @@ index 000000000..991c12a24
 +	return blocked;
 +}
 +EXPORT_SYMBOL_GPL(thermal_perf_gate_blocked);
++
++/**
++ * thermal_perf_gate_thermal_off - is thermal mitigation permanently bypassed?
++ *
++ * Always true. Exists as an explicit predicate so that vendor modules which
++ * apply their own temperature-driven power budgets (MTK ATM/DTM -> PPM, GPU
++ * thermal limiters) gate on a single named API instead of hard-coding the
++ * policy, and so the decision stays in one place if it is ever revisited.
++ */
++bool thermal_perf_gate_thermal_off(void)
++{
++	return true;
++}
++EXPORT_SYMBOL_GPL(thermal_perf_gate_thermal_off);
 +
 +/* ------------------------------------------------------------------ sysfs */
 +
@@ -566,7 +598,7 @@ index 000000000..991c12a24
 +	spin_unlock_irqrestore(&tpg_lock, flags);
 +
 +	return sysfs_emit(buf,
-+			  "enabled=%d mode=%s perf_governor=%d suppressed=%llu allowed=%llu extra=%d\n",
++			  "thermal=off(permanent) enabled=%d mode=%s perf_governor=%d suppressed=%llu allowed=%llu extra=%d\n",
 +			  READ_ONCE(tpg_enabled) ? 1 : 0, tpg_mode_name[m],
 +			  gov ? 1 : 0, sup, alw, n);
 +}
@@ -609,10 +641,10 @@ index 000000000..991c12a24
 +}
 +postcore_initcall(thermal_perf_gate_init);
 diff --git a/include/linux/thermal.h b/include/linux/thermal.h
-index 2b25979ec..87a5e136d 100644
+index 2b25979ec..ecf9b7666 100644
 --- a/include/linux/thermal.h
 +++ b/include/linux/thermal.h
-@@ -370,6 +370,21 @@ int thermal_zone_get_offset(struct thermal_zone_device *tz);
+@@ -370,6 +370,22 @@ int thermal_zone_get_offset(struct thermal_zone_device *tz);
  int thermal_zone_device_enable(struct thermal_zone_device *tz);
  int thermal_zone_device_disable(struct thermal_zone_device *tz);
  void thermal_zone_device_critical(struct thermal_zone_device *tz);
@@ -628,18 +660,20 @@ index 2b25979ec..87a5e136d 100644
 + */
 +bool thermal_perf_gate_enabled(void);
 +bool thermal_perf_gate_blocked(const char *cdev_type);
++bool thermal_perf_gate_thermal_off(void);
 +int thermal_perf_gate_register_notifier(struct notifier_block *nb);
 +int thermal_perf_gate_unregister_notifier(struct notifier_block *nb);
 +void thermal_perf_gate_set_auto_perf(bool any_perf);
  #else
  static inline struct thermal_zone_device *thermal_zone_device_register_with_trips(
  					const char *type,
-@@ -444,6 +459,15 @@ static inline int thermal_zone_device_enable(struct thermal_zone_device *tz)
+@@ -444,6 +460,16 @@ static inline int thermal_zone_device_enable(struct thermal_zone_device *tz)
  
  static inline int thermal_zone_device_disable(struct thermal_zone_device *tz)
  { return -ENODEV; }
 +
 +static inline bool thermal_perf_gate_enabled(void) { return false; }
++static inline bool thermal_perf_gate_thermal_off(void) { return false; }
 +static inline void thermal_perf_gate_set_auto_perf(bool any_perf) { }
 +static inline bool thermal_perf_gate_blocked(const char *cdev_type)
 +{ return false; }

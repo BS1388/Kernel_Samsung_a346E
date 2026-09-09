@@ -161,8 +161,8 @@ sec "7) gpuppm_legacy.c — قفل GPU روی بالاترین OPP (فایل ز�
 [ -f "$GPUP" ] && ok "فایل موجود است" || bad "فایل موجود نیست: $GPUP"
 chk "تابع gpuppm_gate_release() تعریف شده" "$GPUP" '^static void gpuppm_gate_release\('
 chk "زنجیرهٔ notifier ثبت می‌شود" "$GPUP" 'thermal_perf_gate_register_notifier\(&gpuppm_gate_nb\)'
-chk "پیام [GATE] GPU DVFS pinned to peak OPP" "$GPUP" '\[GATE\] GPU DVFS pinned to peak OPP'
-chk "پیام [GATE] GPU DVFS limits released" "$GPUP" '\[GATE\] GPU DVFS limits released'
+chk "پیام [GATE] performance mode: GPU pinned to peak OPP" "$GPUP" '\[GATE\] performance mode: GPU pinned to peak OPP'
+chk "پیام [GATE] خروج از perf mode و آزاد شدن DVFS" "$GPUP" '\[GATE\] performance mode off: GPU DVFS released'
 chk "gate روی stack limit table هم اعمال می‌شود (dual-buck)" "$GPUP" 'gpuppm_gate_release\(g_stack_limit_table\)'
 chk "gate روی limit table اصلی اعمال می‌شود" "$GPUP" 'gpuppm_gate_release\(g_gpu_limit_table\)'
 absc "تابع ساختگی gpuppm_reset_limit() صدا زده نمی‌شود" "$GPUP" 'gpuppm_reset_limit'
@@ -170,11 +170,11 @@ absc "تابع ساختگی gpuppm_reset_limit() صدا زده نمی‌شود" 
 # -----------------------------------------------------------------------------
 sec "8) ap_thermal_limit.c — مسیر ATM/DTM → بودجهٔ توان PPM (فایل زنده)"
 [ -f "$ATM" ] && ok "فایل موجود است" || bad "فایل موجود نیست: $ATM"
-chk "گیت سمت CPU" "$ATM" '^[[:space:]]if \(thermal_perf_gate_enabled\(\)\)'
+chk "خنثی‌سازی بودجهٔ توان CPU (دائمی)" "$ATM" '^[[:space:]]if \(thermal_perf_gate_thermal_off\(\)\)'
 chk "final_limit = 0x7FFFFFFF (سنتینل «بدون محدودیت» خودِ فایل)" "$ATM" 'final_limit = 0x7FFFFFFF;'
-N=$(grep -cE '^[[:space:]]if \(thermal_perf_gate_enabled\(\)\)' "$ATM")
-[ "$N" -eq 2 ] && ok "دقیقاً ۲ نقطهٔ گیت (CPU و GPU) — نه کمتر نه بیشتر" \
-               || bad "تعداد نقاط گیت = $N، انتظار ۲"
+N=$(grep -cE '^[[:space:]]if \(thermal_perf_gate_thermal_off\(\)\)' "$ATM")
+[ "$N" -eq 2 ] && ok "دقیقاً ۲ نقطهٔ خنثی‌سازی (CPU و GPU)" \
+               || bad "تعداد نقاط خنثی‌سازی = $N، انتظار ۲"
 
 # -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
@@ -227,6 +227,43 @@ elif echo "$REL" | grep -q 'FREQ_QOS_MIN_DEFAULT_VALUE'; then
 else
   ok "release فقط همان دو CPU را از snapshot برمی‌گرداند"
 fi
+
+# -----------------------------------------------------------------------------
+sec "8e) تفکیک: حرارت دائمی بی‌قید / قفل فرکانس مشروط"
+echo "  --- سرکوب حرارتی باید دائمی باشد ---"
+chkp "thermal_perf_gate_thermal_off() تعریف شده" '^\+bool thermal_perf_gate_thermal_off\(void\)'
+chkp "همیشه true برمی‌گرداند" '^\+[[:space:]]+return true;'
+chkp "EXPORT_SYMBOL_GPL(thermal_perf_gate_thermal_off)" '^\+EXPORT_SYMBOL_GPL\(thermal_perf_gate_thermal_off\);'
+chkp "thermal.h اعلان thermal_off را دارد" '^\+bool thermal_perf_gate_thermal_off\(void\);'
+chkp "stats وضعیت دائمی را نشان می‌دهد" 'thermal=off\(permanent\)'
+# مهم: blocked() دیگر نباید به tpg_enabled نگاه کند
+BLK=$(awk '/^bool thermal_perf_gate_blocked/,/^}/' /tmp/_gate_blk.c 2>/dev/null)
+if sed -n '/^\+\+\+ b\/drivers\/thermal\/thermal_perf_gate.c/,/^diff --git/p' "$PATCH" \
+   | awk '/^\+bool thermal_perf_gate_blocked/,/^\+}/' \
+   | grep -q 'tpg_enabled'; then
+  bad "thermal_perf_gate_blocked() هنوز به tpg_enabled وابسته است (باید دائمی باشد)"
+else
+  ok "thermal_perf_gate_blocked() بی‌قید است (وابسته به tpg_enabled نیست)"
+fi
+
+echo "  --- ap_thermal_limit باید بی‌قید باشد ---"
+N=$(grep -cE 'if \(thermal_perf_gate_thermal_off\(\)\)' "$ATM")
+[ "$N" -eq 2 ] && ok "هر ۲ نقطه از thermal_off استفاده می‌کنند" \
+               || bad "تعداد thermal_off در ap_thermal_limit = $N، انتظار ۲"
+absc "ap_thermal_limit دیگر از thermal_perf_gate_enabled استفاده نمی‌کند" "$ATM" 'thermal_perf_gate_enabled'
+
+echo "  --- gpuppm: خنثی‌سازی دائمی، پین مشروط ---"
+if grep -A3 '^static bool gpuppm_gate_neutralized' "$GPUP" | grep -q 'thermal_perf_gate_enabled'; then
+  bad "gpuppm_gate_neutralized() هنوز مشروط به perf mode است"
+else
+  ok "gpuppm_gate_neutralized() بی‌قید شد"
+fi
+chk "شرط دائمی: thermal_off && neutralized" "$GPUP" 'if \(thermal_perf_gate_thermal_off\(\) && gpuppm_gate_neutralized\(limiter\)\)'
+chk "در حالت دائمی ورودی به GPUPPM_DEFAULT_IDX می‌رود" "$GPUP" 'limit_table\[limiter\]\.ceiling = GPUPPM_DEFAULT_IDX;'
+chk "پین روی سقف هنوز مشروط به perf mode است" "$GPUP" '^[[:space:]]+if \(thermal_perf_gate_enabled\(\)\)'
+
+echo "  --- قفل CPU باید مشروط بماند ---"
+chk "cpufreq_limit همچنان مشروط به thermal_perf_gate_enabled است" "$CPUF" 'if \(thermal_perf_gate_enabled\(\)\) \{'
 
 sec "9) بررسی‌های «چیزی اشتباهی دست‌نخورده»"
 NOB="$VEND/drivers/misc/mediatek/thermal/common/thermal_zones/mtk_ts_cpu_noBankv2.c"
