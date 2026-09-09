@@ -140,10 +140,14 @@ if [ ! -d "$GATE" ]; then
 fi
 
 sec "2) دما — همهٔ thermal zone ها"
+echo "  (gov = گاورنر حرارتی آن zone. اگر power_allocator باشد، همان مسیری است"
+echo "   که بای‌پس IPA باید بی‌قید باشد. passive باید 0 بماند.)"
 for z in /sys/class/thermal/thermal_zone*; do
   [ -d "$z" ] || continue
-  printf "  %-24s temp=%-9s mode=%s\n" \
-    "$(cat $z/type 2>/dev/null)" "$(cat $z/temp 2>/dev/null)" "$(cat $z/mode 2>/dev/null)"
+  printf "  %-24s temp=%-9s gov=%-16s passive=%-8s mode=%s\n" \
+    "$(cat $z/type 2>/dev/null)" "$(cat $z/temp 2>/dev/null)" \
+    "$(cat $z/policy 2>/dev/null)" "$(cat $z/passive 2>/dev/null)" \
+    "$(cat $z/mode 2>/dev/null)"
 done
 
 sec "3) همهٔ cooling device ها و وضعیت فعلی‌شان"
@@ -282,6 +286,22 @@ for c in /sys/class/thermal/cooling_device*; do
   [ -n "$s" ] && [ "$s" != "0" ] && { echo "  هنوز throttle فعال: $t = $s"; NZ=$((NZ+1)); }
 done
 [ "$NZ" = "0" ] && echo "  cooling device غیر allowlist با state غیرصفر: هیچ"
+
+# مسیر IPA: اگر zone‌ای با گاورنر power_allocator وجود دارد، tz->passive باید ۰ بماند
+NP=0; NPZ=0
+for z in /sys/class/thermal/thermal_zone*; do
+  [ -d "$z" ] || continue
+  g=$(cat "$z/policy" 2>/dev/null)
+  [ "$g" = "power_allocator" ] || continue
+  NP=$((NP+1))
+  pv=$(cat "$z/passive" 2>/dev/null)
+  if [ -n "$pv" ] && [ "$pv" != "0" ]; then
+    echo "  IPA هنوز درگیر است: $(cat $z/type 2>/dev/null) passive=$pv"
+    NPZ=$((NPZ+1))
+  fi
+done
+[ "$NP" = "0" ] && echo "  zone با گاورنر power_allocator: هیچ (مسیر IPA روی این دستگاه فعال نیست)"
+[ "$NP" != "0" ] && [ "$NPZ" = "0" ] && echo "  zone با گاورنر power_allocator: $NP — همه passive=0 (بای‌پس IPA کار می‌کند)"
 
 if [ "$WATCH" != "0" ]; then
   sec "14) نمونهٔ زمانی ${WATCH} ثانیه‌ای (زیر بار اجرا کن!)"
