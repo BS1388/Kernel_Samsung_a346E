@@ -58,17 +58,56 @@ bash perf-profile/verify-patches.sh /path/to/repo
 
 ## ۲) `collect-thermal-log.sh`
 
+لاگ را **خودش** در این مسیر ذخیره می‌کند و در پایان مسیر و اندازه را چاپ می‌کند:
+
+```
+/storage/emulated/0/Download/thermal-log-<YYYYmmdd-HHMMSS>.txt
+```
+
 ```sh
 adb push perf-profile/collect-thermal-log.sh /data/local/tmp/
 
-# حالت معمولی
-adb shell "su -c 'sh /data/local/tmp/collect-thermal-log.sh'" > tlog.txt
+# حالت معمولی — بدون هیچ redirect، فایل خودش ذخیره می‌شود
+adb shell "su -c 'sh /data/local/tmp/collect-thermal-log.sh'"
 
 # زیر بار — هم‌زمان یک بازی/benchmark سنگین اجرا کن
-adb shell "su -c 'sh /data/local/tmp/collect-thermal-log.sh --watch 30'" > tlog-watch.txt
+adb shell "su -c 'sh /data/local/tmp/collect-thermal-log.sh --watch 30'"
+
+# برداشتن فایل
+adb pull /storage/emulated/0/Download/thermal-log-<تاریخ>.txt
 ```
 
-۱۴ بخش. **این‌ها از همه مهم‌ترند:**
+| گزینه | کار |
+|---|---|
+| `--watch [N]` | بخش ۱۴: نمونهٔ زمانی N ثانیه‌ای (پیش‌فرض ۲۰) |
+| `--dir PATH` | مسیر ذخیرهٔ دیگر |
+| `--stdout` | هم‌زمان روی صفحه هم چاپ شود (نیاز به `tee`) |
+
+### اگر نوشتن در `Download` شکست بخورد
+
+روی اندروید نوشتنِ روت به `/storage/emulated/0/` گاهی به SELinux می‌خورد.
+اسکریپت خودش زنجیرهٔ fallback دارد:
+
+```
+/storage/emulated/0/Download → /sdcard/Download → /storage/emulated/0 → /data/local/tmp
+```
+
+و در آخر اگر مسیر اصلی بعداً قابل نوشتن شد، فایل را آنجا کپی می‌کند.
+اگر هیچ‌کدام نشد، با exit 1 و راهنمای مشخص شکست می‌خورد — **ساکت شکست نمی‌خورد**.
+تأیید نوشتن با `[ -s "$OUT" ]` انجام می‌شود و اندازه/تعداد خط چاپ می‌گردد.
+
+### تست‌شده
+
+| سناریو | نتیجه |
+|---|---|
+| `sh -n` + `dash -n` | pass |
+| مسیر پیش‌فرض `/storage/emulated/0/Download` | فایل ۱۱٬۹۲۲ بایت / ۲۰۴ خط، exit 0 |
+| `--watch 3` | ۲۱۲ خط، بخش ۱۴ با ۳ ردیف CSV |
+| `--dir` غیرقابل‌نوشت | درست fallback کرد به `/data/local/tmp` |
+| `--stdout` | ۲۱۱ خط روی صفحه + همهٔ ۱۵ بخش در فایل |
+| هیچ مسیر قابل نوشتن نبود | exit 1 با راهنما، بدون فایل خالی |
+
+### ۱۵ بخش — این‌ها از همه مهم‌ترند
 
 | بخش | چه چیزی ثابت می‌کند |
 |---|---|

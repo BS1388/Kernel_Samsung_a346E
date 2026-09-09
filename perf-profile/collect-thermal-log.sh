@@ -2,20 +2,47 @@
 # =============================================================================
 # collect-thermal-log.sh
 #
-# این اسکریپت را روی دستگاه (با root) اجرا کن و خروجی را برای من بفرست.
-# همهٔ مسیرها از خودِ سورس این کرنل استخراج شده‌اند، نه حدسی — منبع هر کدام
-# در کامنت همان بخش آمده است.
+# این اسکریپت را روی دستگاه (با root) اجرا کن؛ لاگ را خودش در
+#   /storage/emulated/0/Download/thermal-log-<تاریخ>.txt
+# ذخیره می‌کند و در پایان مسیر و اندازهٔ فایل را چاپ می‌کند.
+# همهٔ مسیرها از خودِ سورس این کرنل استخراج شده‌اند، نه حدسی.
 #
-# اجرا روی دستگاه:
-#   adb push collect-thermal-log.sh /data/local/tmp/
-#   adb shell "su -c 'sh /data/local/tmp/collect-thermal-log.sh'" > tlog.txt
+# اجرا:
+#   adb push perf-profile/collect-thermal-log.sh /data/local/tmp/
+#   adb shell "su -c 'sh /data/local/tmp/collect-thermal-log.sh'"
 #
 # زیر بار (هم‌زمان یک بازی/benchmark سنگین اجرا کن):
-#   adb shell "su -c 'sh /data/local/tmp/collect-thermal-log.sh --watch 30'" > tlog-watch.txt
+#   adb shell "su -c 'sh /data/local/tmp/collect-thermal-log.sh --watch 30'"
+#
+# برداشتن فایل:
+#   adb pull /storage/emulated/0/Download/thermal-log-<تاریخ>.txt
+#
+# اگر نوشتن در Download به SELinux خورد، اسکریپت خودش به /data/local/tmp
+# می‌نویسد و بعد کپی می‌کند؛ یا دستی:
+#   adb shell "su -c 'sh /data/local/tmp/collect-thermal-log.sh --dir /data/local/tmp'"
+#
+# برای دیدن هم‌زمان روی صفحه:  --stdout
 # =============================================================================
 
+# -----------------------------------------------------------------------------
+# گزینه‌ها
+#   --watch [N]   نمونهٔ زمانی N ثانیه‌ای (پیش‌فرض ۲۰) — زیر بار اجرا کن
+#   --dir PATH    مسیر ذخیره (پیش‌فرض /storage/emulated/0/Download)
+#   --stdout      هم‌زمان روی صفحه هم چاپ شود (اگر tee موجود باشد)
+# -----------------------------------------------------------------------------
 WATCH=0
-[ "$1" = "--watch" ] && WATCH="${2:-20}"
+STDOUT=0
+OUTDIR="/storage/emulated/0/Download"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --watch)  WATCH="${2:-20}"; [ $# -ge 2 ] && shift ;;
+    --dir)    OUTDIR="${2:-$OUTDIR}"; [ $# -ge 2 ] && shift ;;
+    --stdout) STDOUT=1 ;;
+    *) echo "گزینهٔ ناشناخته: $1" ;;
+  esac
+  shift
+done
 
 GATE=/sys/kernel/thermal_perf
 CPUL=/sys/devices/system/cpu/cpufreq_limit
@@ -31,6 +58,35 @@ show() {
     echo "--- $1   [موجود نیست]"
   fi
 }
+
+# -----------------------------------------------------------------------------
+# انتخاب مسیری که واقعاً قابل نوشتن است.
+# روی اندروید نوشتنِ روت به /storage/emulated/0 گاهی به SELinux می‌خورد، پس
+# یک زنجیرهٔ fallback داریم و در نهایت از /data/local/tmp کپی می‌کنیم.
+# -----------------------------------------------------------------------------
+pick_dir() {
+  _d="$1"
+  mkdir -p "$_d" 2>/dev/null
+  if ( : > "$_d/.tlog_probe" ) 2>/dev/null; then
+    rm -f "$_d/.tlog_probe" 2>/dev/null
+    return 0
+  fi
+  return 1
+}
+
+CAN_WRITE_TARGET=1
+if ! pick_dir "$OUTDIR"; then
+  CAN_WRITE_TARGET=0
+  for d in /sdcard/Download /storage/emulated/0 /data/local/tmp; do
+    if pick_dir "$d"; then OUTDIR="$d"; break; fi
+  done
+fi
+
+STAMP=$(date +%Y%m%d-%H%M%S 2>/dev/null || echo notime)
+OUT="$OUTDIR/thermal-log-$STAMP.txt"
+
+# -----------------------------------------------------------------------------
+main() {
 
 sec "0) هویت بیلد — اول از همه این را چک می‌کنم"
 echo "date        : $(date)"
@@ -214,3 +270,50 @@ fi
 
 sec "پایان"
 echo "این فایل را کامل بفرست. بخش‌های ۱، ۳، ۴، ۶، ۷ و ۱۰ از همه مهم‌ترند."
+echo "hostname : $(getprop ro.product.device 2>/dev/null || uname -n)"
+echo "saved-at : $(date)"
+
+}   # --- پایان main() ---------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# اجرا و ذخیره
+# -----------------------------------------------------------------------------
+if [ "$STDOUT" = "1" ] && command -v tee >/dev/null 2>&1; then
+  main 2>&1 | tee "$OUT"
+else
+  main > "$OUT" 2>&1
+fi
+
+# اگر مسیر اصلی قابل نوشتن نبود، از مسیر موقت کپی کن
+if [ "$CAN_WRITE_TARGET" = "0" ]; then
+  for d in /storage/emulated/0/Download /sdcard/Download; do
+    mkdir -p "$d" 2>/dev/null
+    if cp "$OUT" "$d/thermal-log-$STAMP.txt" 2>/dev/null; then
+      OUT="$d/thermal-log-$STAMP.txt"
+      break
+    fi
+  done
+fi
+
+# -----------------------------------------------------------------------------
+# تأیید اینکه فایل واقعاً نوشته شده (نه اینکه ساکت شکست خورده باشد)
+# -----------------------------------------------------------------------------
+if [ -s "$OUT" ]; then
+  SZ=$(wc -c < "$OUT" 2>/dev/null)
+  LN=$(wc -l < "$OUT" 2>/dev/null)
+  echo "ذخیره شد: $OUT"
+  echo "اندازه  : $SZ بایت ، $LN خط"
+  echo
+  echo "برای برداشتن از گوشی:"
+  echo "  adb pull $OUT"
+  echo
+  echo "اگر می‌خواهی فقط این فایل را بفرستی، همین را ضمیمه کن."
+else
+  echo "خطا: لاگ نوشته نشد یا خالی است: $OUT"
+  echo "این‌ها را امتحان کن:"
+  echo "  1) با root اجرا کن:  su -c 'sh .../collect-thermal-log.sh'"
+  echo "  2) مسیر دیگر بده:    --dir /data/local/tmp"
+  echo "  3) SELinux موقتاً:   su -c 'setenforce 0'  (بعداً setenforce 1)"
+  exit 1
+fi
+
