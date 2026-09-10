@@ -260,6 +260,13 @@ jobs:
           check "SEC_PM Kconfig"           "kernel/kernel_device_modules-6.6/drivers/samsung/pm/Kconfig" "config SEC_PM"
           check "MAX/MIN guard (stp_uart)" "vendor/mediatek/kernel_modules/connectivity/common/common_main/linux/stp_uart.c" "#ifndef MAX"
 
+          # audio: both BTCVSD fixes must survive (call crackle resync and the
+          # mic-start pop silence priming) -- they live in the device module
+          # tree, so nothing else would notice if one got dropped.
+          check "BTCVSD SCO resync/xrun recovery" "kernel/kernel_device_modules-6.6/sound/soc/mediatek/common/mtk-btcvsd.c" "mtk_btcvsd_snd_band_resync"
+          check "BTCVSD rx overrun self-recovery" "kernel/kernel_device_modules-6.6/sound/soc/mediatek/common/mtk-btcvsd.c" "mtk_btcvsd_snd_rx_resync"
+          check "BTCVSD silence priming"          "kernel/kernel_device_modules-6.6/sound/soc/mediatek/common/mtk-btcvsd.c" "mtk_btcvsd_snd_silence_prime"
+
           # zram: upstream line is `= CONFIG_ZRAM_DEF_COMP;`. A hand-edit once
           # turned it into `= lzo-rle;` (no quotes) -> build error.
           Z="$KDIR/drivers/block/zram/zram_drv.c"

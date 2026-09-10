@@ -75,6 +75,15 @@
  * offload path (audio_dsp, AUDIO_TASK_A2DP_ID) over HCI ACL. Everything
  * added here is SCO-only, IRQ-light, and uses ratelimited logging, so it
  * cannot steal HCI scheduling headroom or destabilize A2DP DMA buffers.
+ *
+ * A separate, smaller artefact is the single pop/click heard in the very
+ * millisecond a mic stream is opened (Assistant via the volume-up key, any
+ * capture start): the rings still hold the tail of the previous session,
+ * which is delivered before the first valid SCO frame arrives. That is
+ * handled by silence priming at stream start, see
+ * mtk_btcvsd_snd_silence_prime(). It is independent of the resync logic
+ * above: no state machine is shared, priming only rewrites the ring
+ * contents and the read/write pointers to their clean open() values.
  */
 #define BTCVSD_RX_XRUN_RECOVER_THRESH 4
 #define BTCVSD_INVALID_PACKET_TYPE (-1)
@@ -136,6 +145,7 @@ struct mtk_btcvsd_snd_stream {
 	unsigned int rw_cnt;
 	unsigned int xrun_cnt;	/* consecutive xrun IRQs (bounded recovery) */
 	unsigned int resync_cnt;	/* total auto-resyncs since stream init */
+	unsigned int prime_cnt;	/* silence primings since stream init */
 
 	unsigned long long time_stamp;
 	unsigned long long buf_data_equivalent_time;
@@ -198,6 +208,16 @@ static unsigned int rx_xrun_recover_thresh = BTCVSD_RX_XRUN_RECOVER_THRESH;
 module_param_named(rx_xrun_recover_thresh, rx_xrun_recover_thresh, uint, 0644);
 MODULE_PARM_DESC(rx_xrun_recover_thresh,
 		 "consecutive RX overrun IRQs before drop+resync recovery");
+
+/* Silence priming of both SCO paths at stream start (see
+ * mtk_btcvsd_snd_silence_prime()). Only an A/B kill switch for on-device
+ * debugging of the mic-start pop; it never touches the NB/WB resync or the
+ * bounded xrun recovery.
+ */
+static bool btcvsd_silence_prime = true;
+module_param_named(silence_prime, btcvsd_silence_prime, bool, 0644);
+MODULE_PARM_DESC(silence_prime,
+		 "zero-fill the SCO rings and re-baseline the stream pointers at start");
 
 struct mtk_btcvsd_snd_time_buffer_info {
 	unsigned long long data_count_equi_time;
@@ -633,9 +653,14 @@ static int mtk_btcvsd_write_to_bt(struct mtk_btcvsd_snd *bt,
 		unsigned int next_idx;
 
 		spin_lock_irqsave(&bt->tx_lock, flags);
-		bt->tx->buffer_info.num_valid_addr++;
-		next_idx = bt->tx->buffer_info.num_valid_addr - 1;
-		bt->tx->buffer_info.bt_sram_addr[next_idx] = ap_addr_tx;
+		next_idx = bt->tx->buffer_info.num_valid_addr;
+		/* bt_sram_addr[] is a fixed table: never index past it, or
+		 * the bookkeeping itself overruns into packet_length/packet_num
+		 */
+		if (next_idx < ARRAY_SIZE(bt->tx->buffer_info.bt_sram_addr)) {
+			bt->tx->buffer_info.bt_sram_addr[next_idx] = ap_addr_tx;
+			bt->tx->buffer_info.num_valid_addr++;
+		}
 		spin_unlock_irqrestore(&bt->tx_lock, flags);
 		dev_info(bt->dev, "%s(), new ap_addr_tx = 0x%lx, num_valid_addr %d\n",
 			 __func__, ap_addr_tx,
@@ -1189,6 +1214,117 @@ static struct mtk_btcvsd_snd_stream *get_bt_stream
 		return bt->rx;
 }
 
+/* What mtk_btcvsd_snd_silence_prime() should clean up before a stream runs */
+#define BTCVSD_PRIME_USER_BUF	BIT(0)	/* ALSA pcm buffer (mmap'ed by apps) */
+#define BTCVSD_PRIME_RING	BIT(1)	/* SRAM-facing ring + temp buf + ptrs */
+#define BTCVSD_PRIME_BT_SRAM	BIT(2)	/* TX: encoded mute data into BT SRAM */
+
+/*
+ * Silence priming at stream start (A346E).
+ *
+ * A mic session can be keyed (Google Assistant from the volume-up key, a
+ * VoIP uplink, ...) before the BT controller has delivered its first valid
+ * SCO packet. The BTCVSD backend substream is normally kept open across
+ * sessions, so mtk_btcvsd_snd_tx_init()/rx_init() -- and with them the memsets
+ * they do -- do not run again, and the ISR only ever overwrites the ring
+ * slots it needs. Result: the RX ring, the temp packet buffer and the ALSA
+ * runtime buffer (apps mmap it, SNDRV_PCM_INFO_MMAP is advertised) still
+ * carry the bytes of the previous session, and those leftovers are streamed
+ * out for a few milliseconds before the first real frame arrives. That is the
+ * short pop/click heard at the exact moment the microphone is opened.
+ *
+ * Priming replaces that leftover with silence:
+ *   - BTCVSD_PRIME_USER_BUF: zero the ALSA pcm buffer, so an mmap reader that
+ *     starts before the first period is filled gets zeros, not old audio;
+ *   - BTCVSD_PRIME_RING: zero the SRAM-facing ring and the per-stream temp
+ *     packet buffer and re-baseline packet_w/packet_r plus the ALSA pointer
+ *     tracking, so no stale backlog is reported as available (RX) or free
+ *     (TX) space to the next IRQs;
+ *   - BTCVSD_PRIME_BT_SRAM: overwrite the BT TX SRAM window with the encoded
+ *     mute pattern (same helper hw_free uses) instead of leaving the previous
+ *     session's last encoded frame queued for transmission.
+ *
+ * Process context only (prepare / trigger START|RESUME), i.e. while no valid
+ * SCO data is in flight yet. The NB/WB band-resync and the bounded xrun
+ * recovery state machines are deliberately left alone: priming only rewrites
+ * the same counters those paths use, to the same clean values an open()
+ * would produce, so a mid-call restart still lands on an in-sync ring.
+ */
+static void mtk_btcvsd_snd_silence_prime(struct mtk_btcvsd_snd *bt,
+					 struct mtk_btcvsd_snd_stream *bt_stream,
+					 struct snd_pcm_substream *substream,
+					 unsigned int flags,
+					 const char *reason)
+{
+	unsigned long irq_flags;
+	bool is_tx = bt_stream->stream == SNDRV_PCM_STREAM_PLAYBACK;
+	struct snd_pcm_runtime *runtime;
+	spinlock_t *lock;	/* tx_lock or rx_lock, per direction */
+	u8 *ring;
+	size_t ring_bytes;
+
+	if (!btcvsd_silence_prime)
+		return;
+
+	lock = is_tx ? &bt->tx_lock : &bt->rx_lock;
+	ring = is_tx ? bt->tx_packet_buf : bt->rx_packet_buf;
+	ring_bytes = is_tx ? BTCVSD_TX_BUF_SIZE : BTCVSD_RX_BUF_SIZE;
+
+	/* the ALSA pcm buffer the app reads: MMAP is advertised, so bytes
+	 * the previous session left there are handed out verbatim until the
+	 * driver fills the first period. Zero them now. This is deliberately
+	 * a plain memset and not snd_pcm_runtime_buffer_set_silence(): that
+	 * helper takes runtime->buffer_mutex, which the ALSA core already
+	 * holds around prepare(), and trigger() runs under the stream lock
+	 * (atomic) -- and for the only format this DAI supports, S16_LE,
+	 * digital silence is 0x00 anyway.
+	 */
+	if ((flags & BTCVSD_PRIME_USER_BUF) && substream) {
+		runtime = substream->runtime;
+
+		if (runtime && runtime->dma_area && runtime->dma_bytes)
+			memset(runtime->dma_area, 0, runtime->dma_bytes);
+	}
+
+	if (flags & BTCVSD_PRIME_RING) {
+		spin_lock_irqsave(lock, irq_flags);
+
+		memset(ring, 0, ring_bytes);
+		memset(bt_stream->temp_packet_buf, 0,
+		       sizeof(bt_stream->temp_packet_buf));
+
+		bt_stream->packet_w = 0;
+		bt_stream->packet_r = 0;
+		bt_stream->prev_packet_idx = 0;
+		bt_stream->prev_frame = 0;
+		bt_stream->rw_cnt = 0;
+		bt_stream->xrun_cnt = 0;
+		/* an empty RX ring is not an overrun; an empty TX ring is an
+		 * underrun and keeps the ISR from feeding BT until ALSA has
+		 * queued 2 IRQs worth of data (same convention as
+		 * mtk_btcvsd_snd_band_resync())
+		 */
+		bt_stream->xrun = is_tx;
+
+		bt_stream->prime_cnt++;
+
+		spin_unlock_irqrestore(lock, irq_flags);
+	}
+
+	/* The other direction being RUNNING means we are restarting one half
+	 * of a live SCO session: keep off the shared BT SRAM then and only
+	 * prime on a real (re)start.
+	 */
+	if ((flags & BTCVSD_PRIME_BT_SRAM) && is_tx &&
+	    !bt->disable_write_silence &&
+	    bt->rx->state != BT_SCO_STATE_RUNNING)
+		btcvsd_tx_clean_buffer(bt);
+
+	dev_info(bt->dev, "%s(), stream %d, flags 0x%x (%s), primings %u\n",
+		 __func__, bt_stream->stream, flags, reason,
+		 bt_stream->prime_cnt);
+}
+
 /* pcm ops */
 static const struct snd_pcm_hardware mtk_btcvsd_hardware = {
 	.info = (SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_INTERLEAVED |
@@ -1277,8 +1413,17 @@ static int mtk_pcm_btcvsd_prepare(struct snd_soc_component *component,
 {
 	struct mtk_btcvsd_snd *bt = snd_soc_component_get_drvdata(component);
 	struct mtk_btcvsd_snd_stream *bt_stream = get_bt_stream(bt, substream);
+	unsigned int prime_flags = BTCVSD_PRIME_RING | BTCVSD_PRIME_USER_BUF;
 
 	dev_dbg(bt->dev, "%s(), stream %d\n", __func__, substream->stream);
+
+	/* prime before set_state() re-enables the BTCVSD irq, so the very
+	 * first SCO packet of the new session lands in a clean ring
+	 */
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
+		prime_flags |= BTCVSD_PRIME_BT_SRAM;
+	mtk_btcvsd_snd_silence_prime(bt, bt_stream, substream, prime_flags,
+				     "prepare");
 
 	mtk_btcvsd_snd_set_state(bt, bt_stream, BT_SCO_STATE_RUNNING);
 	return 0;
@@ -1290,6 +1435,7 @@ static int mtk_pcm_btcvsd_trigger(struct snd_soc_component *component,
 	struct mtk_btcvsd_snd *bt = snd_soc_component_get_drvdata(component);
 	struct mtk_btcvsd_snd_stream *bt_stream = get_bt_stream(bt, substream);
 	int stream = substream->stream;
+	unsigned int prime_flags;
 	int hw_packet_ptr;
 
 	dev_dbg(bt->dev, "%s(), stream %d, cmd %d\n",
@@ -1298,6 +1444,21 @@ static int mtk_pcm_btcvsd_trigger(struct snd_soc_component *component,
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
+		/* prepare already primed a normal start; this pass covers a
+		 * (re)start that skips prepare (resume from suspend, an
+		 * app-side reset+start). The TX ring is deliberately NOT
+		 * flushed here: apps preload the mic data they want sent
+		 * before START, and zeroing that would eat the beginning of
+		 * this session instead of the tail of the previous one.
+		 */
+		prime_flags = BTCVSD_PRIME_USER_BUF;
+		if (stream == SNDRV_PCM_STREAM_CAPTURE)
+			prime_flags |= BTCVSD_PRIME_RING;
+		else
+			prime_flags |= BTCVSD_PRIME_BT_SRAM;
+		mtk_btcvsd_snd_silence_prime(bt, bt_stream, substream,
+					     prime_flags, "trigger");
+
 		hw_packet_ptr = stream == SNDRV_PCM_STREAM_PLAYBACK ?
 				bt_stream->packet_r : bt_stream->packet_w;
 		bt_stream->prev_packet_idx = hw_packet_ptr;
