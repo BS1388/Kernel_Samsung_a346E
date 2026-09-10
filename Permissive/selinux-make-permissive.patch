@@ -1,6 +1,3 @@
-From 670932828666f8e755e7fcef81cffaa49074214b Mon Sep 17 00:00:00 2001
-From: Fede2782 <78815152+Fede2782@users.noreply.github.com>
-Date: Wed, 19 Nov 2025 21:45:56 +0100
 Subject: [PATCH] selinux: make permissive
 
 ---
