@@ -46,6 +46,7 @@ on:
     branches:
       - A346E
       - a346E-Stock
+      - "arena/**"
   pull_request:
     branches:
       - A346E
@@ -259,6 +260,13 @@ jobs:
           }
           check "SEC_PM Kconfig"           "kernel/kernel_device_modules-6.6/drivers/samsung/pm/Kconfig" "config SEC_PM"
           check "MAX/MIN guard (stp_uart)" "vendor/mediatek/kernel_modules/connectivity/common/common_main/linux/stp_uart.c" "#ifndef MAX"
+
+          # audio: both BTCVSD fixes must survive (call crackle resync and the
+          # mic-start pop silence priming) -- they live in the device module
+          # tree, so nothing else would notice if one got dropped.
+          check "BTCVSD SCO resync/xrun recovery" "kernel/kernel_device_modules-6.6/sound/soc/mediatek/common/mtk-btcvsd.c" "mtk_btcvsd_snd_band_resync"
+          check "BTCVSD rx overrun self-recovery" "kernel/kernel_device_modules-6.6/sound/soc/mediatek/common/mtk-btcvsd.c" "mtk_btcvsd_snd_rx_resync"
+          check "BTCVSD silence priming"          "kernel/kernel_device_modules-6.6/sound/soc/mediatek/common/mtk-btcvsd.c" "mtk_btcvsd_snd_silence_prime"
 
           # zram: upstream line is `= CONFIG_ZRAM_DEF_COMP;`. A hand-edit once
           # turned it into `= lzo-rle;` (no quotes) -> build error.
@@ -618,45 +626,6 @@ jobs:
             grep -q "SELinux permissive patch" build.log || echo "::warning::permissive requested but not confirmed in the log"
           fi
           ls -lh Image
-
-      # ----------------------------------------------------------------------
-      # Publish build errors through the REST API.
-      #
-      # Job logs and artifacts are both served from *.blob.core.windows.net,
-      # which a sandbox driving an automated diagnose/patch/rebuild loop often
-      # cannot reach (the api.github.com host is reachable, the blob host is
-      # not) - `gh run view --log-failed` and `gh run download` both return an
-      # empty body with EOF there. This job already has `issues: write`, so
-      # opening an issue is the one failure channel that works everywhere.
-      # ----------------------------------------------------------------------
-      - name: Publish build errors as an issue (self-healing loop input)
-        if: failure()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -eu
-          [ -f build.log ] || { echo "no build.log - nothing to publish"; exit 0; }
-          TITLE="build failure: run ${GITHUB_RUN_ID} (${GITHUB_SHA:0:7})"
-          {
-            echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-            echo "Ref: ${GITHUB_REF}   SHA: ${GITHUB_SHA}"
-            echo
-            echo "### matched errors"
-            echo '```'
-            grep -nE "error:|Error [0-9]+|FAILED:|ninja: build stopped|undefined symbol|modpost|ERROR: |died with" \
-              build.log | tail -n 150 || echo "(no error lines matched)"
-            echo '```'
-            echo
-            echo "### tail of build.log"
-            echo '```'
-            tail -n 150 build.log
-            echo '```'
-          } > /tmp/build_failure.md
-          # 65536 char issue body limit
-          head -c 60000 /tmp/build_failure.md > /tmp/build_failure_trim.md
-          gh issue create --title "$TITLE" --body-file /tmp/build_failure_trim.md \
-            --label ci-failure 2>/dev/null \
-          || gh issue create --title "$TITLE" --body-file /tmp/build_failure_trim.md
 
       - name: Upload Image
         uses: actions/upload-artifact@v6
