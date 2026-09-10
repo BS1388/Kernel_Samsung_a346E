@@ -45,12 +45,11 @@ on:
   push:
     branches:
       - A346E
-      - a346E-Stock
-      - "arena/**"
+      - Game
   pull_request:
     branches:
       - A346E
-      - "arena/**"
+      - Game
 
 permissions:
   contents: read
