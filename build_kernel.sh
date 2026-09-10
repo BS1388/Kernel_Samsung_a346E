@@ -409,8 +409,11 @@ LOOP_EOF
         sed -i '/^#define[[:space:]]*MAX[[:space:]]*(/d' "$zf" || true
         sed -i '/^#define[[:space:]]*MIN[[:space:]]*(/d' "$zf" || true
         if ! grep -q "#include <linux/minmax.h>" "$zf"; then
-          sed -i 's|#include <linux/kernel.h>|#include <linux/kernel.h>\n#include <linux/minmax.h>|' "$zf" || \
-          sed -i '1i #include <linux/minmax.h>' "$zf"
+          if grep -q "#include <linux/kernel.h>" "$zf"; then
+            sed -i 's|#include <linux/kernel.h>|#include <linux/kernel.h>\n#include <linux/minmax.h>|' "$zf" || true
+          else
+            sed -i '1i #include <linux/minmax.h>' "$zf" || true
+          fi
         fi
         ok "Patched $zf"
       else
@@ -585,7 +588,7 @@ KCEOF
       if grep -q '/\*.*/\*.*power.h' "$wakeup_file"; then
         warn "Nested comment still in $wakeup_file, cleaning"
         sed -i '/power.h/d' "$wakeup_file" || true
-        echo '/* compat: removed private power.h for kernel-6.6 */' >> "$wakeup_file.tmp" || true
+        echo '/* compat: removed private power.h for kernel-6.6 */' >> "$wakeup_file" || true
       fi
     fi
     # Ensure suspend.h is included for PM_POST_SUSPEND and register_pm_notifier (lost with power.h)
@@ -1108,7 +1111,11 @@ run_kernel_build() {
   export BUILD_CONFIG="../out/target/product/a34x/obj/KERNEL_OBJ/build.config"
   export OUT_DIR="../out/target/product/a34x/obj/KLEAF_OBJ"
   export DIST_DIR="../out/target/product/a34x/obj/KLEAF_OBJ/dist"
-  export DEFCONFIG_OVERLAYS="mt6877_overlay.config mt6877_teegris_5_overlay.config"
+  local defconfig_overlays="mt6877_overlay.config mt6877_teegris_5_overlay.config"
+  if [ -f "kernel_device_modules-6.6/kernel/configs/disable_module_sig.config" ]; then
+    defconfig_overlays="$defconfig_overlays disable_module_sig.config"
+  fi
+  export DEFCONFIG_OVERLAYS="$defconfig_overlays"
   export PROJECT="mgk_64_k66"
   export MODE="user"
   export KERNEL_VERSION="kernel-6.6"
