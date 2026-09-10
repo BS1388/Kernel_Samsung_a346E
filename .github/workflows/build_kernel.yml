@@ -46,6 +46,7 @@ on:
     branches:
       - A346E
       - a346E-Stock
+      - "arena/**"
   pull_request:
     branches:
       - A346E
