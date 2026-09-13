@@ -9,7 +9,8 @@ kernel/patches-kernel-6.6/
 ├── apply.sh                                    <- applies / checks / reverts
 ├── 0001-modules-check-dedup-sec_thermistor.patch
 ├── 0002-restore-loop_h-for-zram_ext.patch
-└── 0003-samsung-kdp-cred-compat-symbols.patch  <- the Bluetooth fix
+├── 0003-samsung-kdp-cred-compat-symbols.patch  <- the Bluetooth fix
+└── 0004-thermal-soc-throttle-bypass.patch      <- opt-in SoC no-throttle
 ```
 
 ## Updating `kernel-6.6` (the whole point of this folder)
@@ -95,6 +96,49 @@ only exports the vanilla behaviour under those names, plus `kdp_get_usecount`,
 `is_kdp_protect_addr()` and `security_integrity_current()` (both return 0) and
 `kdp_enable = false`. The whole block is wrapped in `#ifndef CONFIG_KDP_CRED`,
 so a real KDP tree is unaffected.
+
+### `0004-thermal-soc-throttle-bypass.patch`
+`drivers/thermal/thermal_core.c`
+
+Opt-in switch that removes **kernel-side** thermal throttling for SoC zones
+only. Off by default; enable on the kernel command line with
+`thermal_sys.soc_nothrottle=1` (read-only at runtime, so it cannot be flipped
+after boot).
+
+`handle_non_critical_trips()` is the single place a governor is invoked
+(`tz->governor->throttle()`), so that is where the bypass sits:
+
+```c
+	if (trip.type == THERMAL_TRIP_CRITICAL || trip.type == THERMAL_TRIP_HOT)
+		handle_critical_trips(tz, trip_id, trip.temperature, trip.type);
+	else if (!thermal_zone_throttle_bypassed(tz))
+		handle_non_critical_trips(tz, trip_id);
+```
+
+What it deliberately does **not** do:
+
+* **`THERMAL_TRIP_HOT` / `THERMAL_TRIP_CRITICAL` are never bypassed.** The
+  `handle_critical_trips()` → `tz->ops->critical()` →
+  `thermal_zone_device_critical()` → `hw_protection_shutdown()` path still
+  runs, so a real overheat still powers the device off.
+* **Battery / charger / USB-connector / PMIC zones are never bypassed.** They
+  are matched by name (`batt`, `bat_`, `vbat`, `charger`, `chg`, `usb`,
+  `pmic`, `fuel`) and that table is consulted *before* the bypass table, so it
+  wins. This matters because a zeroed or ignored battery reading does not mean
+  "no thermal event" — it means *cold*: `charger-manager.c` would return
+  `CM_BATT_COLD` and stop charging.
+* **No temperature is faked.** `tz->temperature`, the sysfs `temp` attribute
+  and `thermal_genl_sampling_temp()` keep reporting the real reading. Faking
+  `0` in `__thermal_zone_get_temp()` would blind the critical path above and
+  the userspace thermal HAL at the same time.
+
+Bypassed zone names are matched as substrings of `tz->type`: `cpu`, `gpu`,
+`soc`, `npu`, `apu`, `little`, `big`, `tzts`, `tsens`, `ts`, `skin`, `ap`.
+Each affected zone logs once at registration so `dmesg` shows exactly what was
+affected.
+
+**Scope:** kernel governors only. An Android thermal HAL that writes
+cooling-device state from userspace is not in this file and is not affected.
 
 ## Adding a new fix
 

@@ -1,0 +1,115 @@
+diff --git a/drivers/thermal/thermal_core.c b/drivers/thermal/thermal_core.c
+index c23261d17..90c0c262d 100644
+--- a/drivers/thermal/thermal_core.c
++++ b/drivers/thermal/thermal_core.c
+@@ -9,9 +9,11 @@
+ 
+ #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+ 
++#include <linux/array_size.h>
+ #include <linux/device.h>
+ #include <linux/err.h>
+ #include <linux/export.h>
++#include <linux/moduleparam.h>
+ #include <linux/slab.h>
+ #include <linux/kdev_t.h>
+ #include <linux/idr.h>
+@@ -307,6 +309,77 @@ static void monitor_thermal_zone(struct thermal_zone_device *tz)
+ 		thermal_zone_device_set_polling(tz, tz->polling_delay_jiffies);
+ }
+ 
++/*
++ * SoC thermal throttle bypass
++ * ---------------------------
++ * When soc_nothrottle is set, the governor is not invoked for the
++ * non-critical (ACTIVE/PASSIVE) trips of SoC thermal zones, which removes
++ * kernel-side thermal throttling of the CPU/GPU/skin cooling loops.
++ *
++ * Hard limits, deliberately not configurable:
++ *
++ *  - THERMAL_TRIP_HOT and THERMAL_TRIP_CRITICAL are never bypassed, so
++ *    handle_critical_trips() -> tz->ops->critical() ->
++ *    thermal_zone_device_critical() -> hw_protection_shutdown() still runs
++ *    and a genuine overheat still powers the device off.
++ *  - Battery, charger, USB-connector and PMIC zones are never bypassed
++ *    whatever they are called, so charge termination and connector
++ *    overheat protection keep working.
++ *  - No temperature is faked. tz->temperature, the sysfs 'temp' attribute
++ *    and thermal_genl_sampling_temp() all keep reporting the real reading,
++ *    so nothing downstream is lied to and the critical path above still
++ *    sees the true value.
++ *
++ * Scope: this stops *kernel* governors only. An Android thermal HAL that
++ * drives cooling devices from userspace is outside this file.
++ */
++static bool soc_nothrottle;
++module_param(soc_nothrottle, bool, 0444);
++MODULE_PARM_DESC(soc_nothrottle,
++	"Skip governor throttling for SoC (CPU/GPU/skin) thermal zones");
++
++/*
++ * Zones that always keep their mitigation. Matched as substrings of
++ * tz->type and checked before the bypass list, so this one wins.
++ */
++static const char * const throttle_protected_zones[] = {
++	"batt", "bat_", "vbat", "charger", "chg", "usb", "pmic", "fuel",
++};
++
++/* SoC zones whose governor throttling may be bypassed. */
++static const char * const throttle_bypass_zones[] = {
++	"cpu", "gpu", "soc", "npu", "apu", "little", "big",
++	"tzts", "tsens", "ts", "skin", "ap",
++};
++
++static bool thermal_zone_name_has(const char * const *table, size_t n,
++				  const char *name)
++{
++	size_t i;
++
++	for (i = 0; i < n; i++)
++		if (strstr(name, table[i]))
++			return true;
++
++	return false;
++}
++
++static bool thermal_zone_throttle_bypassed(struct thermal_zone_device *tz)
++{
++	if (!soc_nothrottle)
++		return false;
++
++	/* Battery / charger / connector / PMIC keep their mitigation. */
++	if (thermal_zone_name_has(throttle_protected_zones,
++				  ARRAY_SIZE(throttle_protected_zones),
++				  tz->type))
++		return false;
++
++	return thermal_zone_name_has(throttle_bypass_zones,
++				     ARRAY_SIZE(throttle_bypass_zones),
++				     tz->type);
++}
++
+ static void handle_non_critical_trips(struct thermal_zone_device *tz, int trip)
+ {
+ 	tz->governor ? tz->governor->throttle(tz, trip) :
+@@ -369,7 +442,7 @@ static void handle_thermal_trip(struct thermal_zone_device *tz, int trip_id)
+ 
+ 	if (trip.type == THERMAL_TRIP_CRITICAL || trip.type == THERMAL_TRIP_HOT)
+ 		handle_critical_trips(tz, trip_id, trip.temperature, trip.type);
+-	else
++	else if (!thermal_zone_throttle_bypassed(tz))
+ 		handle_non_critical_trips(tz, trip_id);
+ }
+ 
+@@ -1345,6 +1418,11 @@ thermal_zone_device_register_with_trips(const char *type, struct thermal_trip *t
+ 	if (result)
+ 		goto release_device;
+ 
++	/* Reported once per zone, only for the zones actually affected. */
++	if (thermal_zone_throttle_bypassed(tz))
++		dev_info(&tz->device,
++			 "SoC throttle bypass: governor throttling disabled for this zone\n");
++
+ 	for (count = 0; count < num_trips; count++) {
+ 		struct thermal_trip trip;
+ 

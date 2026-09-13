@@ -46,6 +46,10 @@ on:
     branches:
       - A346E
       - Game
+      # agent sessions work on arena/* and must be able to start a build;
+      # without this a push to an arena branch silently ran nothing while the
+      # comment above claimed it built KSUN.
+      - "arena/**"
   pull_request:
     branches:
       - A346E
