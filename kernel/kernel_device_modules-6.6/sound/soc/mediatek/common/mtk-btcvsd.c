@@ -56,19 +56,26 @@
  * SCO resync / xrun self-recovery (A346E: MT6877 BTCVSD SRAM bridge).
  *
  * When a call/mic session starts, the BT controller switches the SCO link
- * NB (CVSD 8 kHz) <-> WB (mSBC 16 kHz). That changes the packet geometry
- * (packet_length / packet_num / buf_cnt) delivered to the ISR below. Any
- * data buffered under the old geometry is stale: if it is kept, the ring
- * desyncs and the RX side wedges in a perpetual overrun (xrun) state,
- * which is heard as continuous crackling/hiss/robotic audio for the whole
- * call. NB/WB transitions therefore flush both rings (see
+ * NB (CVSD 8 kHz) <-> WB (mSBC 16 kHz). The bytes buffered in the rings under
+ * the old codec are stale: if they are kept, the ring desyncs and the RX side
+ * wedges in a perpetual overrun (xrun) state, which is heard as continuous
+ * crackling/hiss/robotic audio for the whole call. A change of the effective
+ * codec (CVSD<->mSBC) therefore flushes both rings (see
  * mtk_btcvsd_snd_band_resync).
+ *
+ * A packet_type change WITHIN the same codec only changes the SRAM transfer
+ * geometry (packet_length / packet_num) delivered to the ISR. The rings hold
+ * fixed-size units (RX: 30 bytes + valid flag, TX: 60 bytes), so their
+ * contents stay valid and nothing is flushed -- flushing there would only
+ * inject an audible glitch.
  *
  * If an RX overrun still persists (ALSA/Userspace not draining fast
  * enough), recovery is BOUNDED: after BTCVSD_RX_XRUN_RECOVER_THRESH
  * consecutive overrun IRQs the oldest stale chunk is dropped and the ring
  * is resynced, instead of wedging forever. Recovery is O(1) pointer
- * arithmetic in IRQ context -- no loops over the buffer, no sleeps.
+ * arithmetic in IRQ context -- no loops over the buffer, no sleeps. It is
+ * also the safety net should a real band switch ever go unnoticed by the
+ * codec detection above.
  *
  * NOTE (LDAC/A2DP headroom): high-bitrate A2DP (e.g. LDAC 990 kbps /
  * 96 kHz) does NOT pass through this driver -- it is served by the ADSP
@@ -193,12 +200,20 @@ struct mtk_btcvsd_snd {
 	enum BT_SCO_BAND band;
 
 	/* packet_type (BT_SCO_CVSD_*) seen by the previous IRQ, or
-	 * BTCVSD_INVALID_PACKET_TYPE when idle/unknown. A change while a
-	 * stream is active means an NB<->WB (CVSD<->mSBC) transition and
-	 * triggers a ring resync. Written by the ISR only; reset when both
-	 * streams go idle.
+	 * BTCVSD_INVALID_PACKET_TYPE when idle/unknown. Only used to log
+	 * geometry changes inside one codec; it never triggers a flush by
+	 * itself. Written by the ISR only; reset when both streams go idle.
 	 */
 	int last_packet_type;
+
+	/* Effective SCO codec seen by the previous IRQ: 1 = CVSD (NB),
+	 * 2 = mSBC (WB), 0 when idle/unknown. Taken from the codec bits of
+	 * the control register, falling back to bt->band + 1 when the
+	 * controller reports 0 (same rule write_to_bt uses). A change while
+	 * a stream is active is a real NB<->WB switch and triggers a ring
+	 * resync. Written by the ISR only; reset when both streams go idle.
+	 */
+	unsigned int last_codec;
 };
 
 /* Consecutive RX-overrun IRQs tolerated before stale data is dropped and
@@ -305,10 +320,12 @@ static void mtk_btcvsd_snd_set_state(struct mtk_btcvsd_snd *bt,
 			bt->irq_disabled = 1;
 			bt->irq_first_burst = 0;
 		}
-		/* forget the old packet geometry so the next stream start
-		 * re-baselines instead of triggering a spurious NB/WB resync
+		/* forget the old packet geometry and codec so the next stream
+		 * start re-baselines instead of triggering a spurious NB/WB
+		 * resync
 		 */
 		bt->last_packet_type = BTCVSD_INVALID_PACKET_TYPE;
+		bt->last_codec = 0;
 	} else {
 		if (bt->irq_disabled) {
 			enable_irq(bt->irq_id);
@@ -709,11 +726,11 @@ static void mtk_btcvsd_snd_rx_resync(struct mtk_btcvsd_snd *bt,
 }
 
 /*
- * NB<->WB (CVSD<->mSBC) transitions change the SCO packet geometry, so every
- * packet buffered under the old band is stale. Flush both rings, clear the
- * xrun state and re-baseline the ALSA pointer tracking. Called from the
- * ISR when the packet_type signalled by the BT controller changes; O(1),
- * IRQ-safe.
+ * NB<->WB (CVSD<->mSBC) transitions make every packet buffered under the old
+ * codec stale. Flush both rings, clear the xrun state and re-baseline the
+ * ALSA pointer tracking. Called from the ISR only when the effective codec
+ * signalled by the BT controller changes (not on a mere packet_type change
+ * inside one codec); O(1), IRQ-safe.
  */
 static void mtk_btcvsd_snd_band_resync(struct mtk_btcvsd_snd *bt,
 				       unsigned int packet_type)
@@ -742,7 +759,7 @@ static void mtk_btcvsd_snd_band_resync(struct mtk_btcvsd_snd *bt,
 	memset(bt->rx->temp_packet_buf, 0, sizeof(bt->rx->temp_packet_buf));
 	memset(bt->tx->temp_packet_buf, 0, sizeof(bt->tx->temp_packet_buf));
 
-	dev_info(bt->dev, "%s(), SCO band/packet-type change -> %u, rings flushed\n",
+	dev_info(bt->dev, "%s(), SCO band (codec) change, packet_type %u, rings flushed\n",
 		 __func__, packet_type);
 }
 
@@ -751,6 +768,7 @@ static irqreturn_t mtk_btcvsd_snd_irq_handler(int irq_id, void *dev)
 	struct mtk_btcvsd_snd *bt = dev;
 	unsigned int packet_type, packet_num, packet_length;
 	unsigned int buf_cnt_tx, buf_cnt_rx, control;
+	unsigned int codec;
 	static DEFINE_RATELIMIT_STATE(_rs, 2 * HZ, 1);
 	struct arm_smccc_res res;
 
@@ -793,16 +811,36 @@ static irqreturn_t mtk_btcvsd_snd_irq_handler(int irq_id, void *dev)
 	buf_cnt_tx = btsco_packet_info[packet_type][2];
 	buf_cnt_rx = btsco_packet_info[packet_type][3];
 
-	/* NB<->WB (CVSD<->mSBC) switch: the packet geometry changed, so all
-	 * data buffered under the old band is stale. Flush both rings now
-	 * instead of desyncing into a perpetual overrun.
+	/* Effective codec: 1 = CVSD (NB), 2 = mSBC (WB). The controller
+	 * reports it in bits 26:25 of the control register; 0 means "not
+	 * signalled", then fall back to the band set by the audio HAL (same
+	 * rule as write_to_bt()).
 	 */
-	if (bt->last_packet_type != BTCVSD_INVALID_PACKET_TYPE &&
-	    (unsigned int)bt->last_packet_type != packet_type) {
-		dev_info(bt->dev, "%s(), packet_type %d -> %u (NB/WB switch)\n",
-			 __func__, bt->last_packet_type, packet_type);
+	codec = (control >> 25) & 3;
+	if (codec != 1 && codec != 2)
+		codec = READ_ONCE(bt->band) + 1;
+
+	/* NB<->WB (CVSD<->mSBC) switch: all data buffered under the old codec
+	 * is stale. Flush both rings now instead of desyncing into a
+	 * perpetual overrun. A packet_type change inside one codec only
+	 * changes the SRAM transfer geometry; the rings hold fixed-size
+	 * units, so they stay valid and are NOT flushed (that would only
+	 * inject a glitch). Should a real band switch ever slip through, the
+	 * bounded RX xrun recovery below still catches it.
+	 */
+	if (bt->last_codec && bt->last_codec != codec) {
+		dev_info(bt->dev, "%s(), codec %u -> %u (packet_type %d -> %u), NB/WB switch\n",
+			 __func__, bt->last_codec, codec,
+			 bt->last_packet_type, packet_type);
 		mtk_btcvsd_snd_band_resync(bt, packet_type);
+	} else if (bt->last_packet_type != BTCVSD_INVALID_PACKET_TYPE &&
+		   (unsigned int)bt->last_packet_type != packet_type) {
+		dev_dbg_ratelimited(bt->dev,
+				    "%s(), packet_type %d -> %u, same codec %u, no flush\n",
+				    __func__, bt->last_packet_type,
+				    packet_type, codec);
 	}
+	bt->last_codec = codec;
 	bt->last_packet_type = (int)packet_type;
 
 	if (bt->tx->state == BT_SCO_STATE_LOOPBACK) {
