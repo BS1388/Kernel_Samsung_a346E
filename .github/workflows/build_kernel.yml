@@ -383,6 +383,24 @@ jobs:
           { echo "KSU_GIT_TAG=$KSU_TAG"; echo "KSU_VERSION=$KSU_CODE"; echo "KSU_COMMIT=$KSU_SHA"; } >> "$GITHUB_ENV"
           { echo "ksu_tag=$KSU_TAG"; echo "ksu_code=$KSU_CODE"; } >> "$GITHUB_OUTPUT"
           echo "KernelSU-Next $KSU_TAG ($KSU_CODE) @ $KSU_SHA"
+          
+        - name: SUSFS KernelSU-side patch
+        if: env.SUSFS_PATCH == 'true' && env.KSU_VAR != 'NO-ROOT'
+        run: |
+         set -eu
+          PATCH="$GITHUB_WORKSPACE/susfs/10_enable_susfs_for_ksu.patch"
+          [ -f "$PATCH" ] || { echo "::error::missing $PATCH"; exit 1; }
+          cd "$G_KERNEL/KernelSU-Next"
+          if patch -p1 --forward --batch --dry-run < "$PATCH" > /tmp/ksu_susfs.log 2>&1; then
+            patch -p1 --forward --batch < "$PATCH"
+            echo "SUSFS KernelSU-side patch applied"
+          elif grep -q "Reversed (or previously applied)" /tmp/ksu_susfs.log; then
+            echo "SUSFS KernelSU-side patch already applied"
+          else
+            echo "::error::10_enable_susfs_for_ksu.patch does not apply to this KernelSU-Next"
+            cat /tmp/ksu_susfs.log
+            exit 1
+          fi
 
       - name: Defconfig (KSU + IPSet)
         run: |
