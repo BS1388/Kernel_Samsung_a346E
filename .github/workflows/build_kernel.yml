@@ -370,7 +370,8 @@ jobs:
           KSU_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo dev)
           KSU_CODE=$((30000 + $(git rev-list --count HEAD 2>/dev/null || echo 0)))
           KSU_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
-
+          
+          
           if [ -f kernel/Kbuild ] && grep -q KSU_VERSION_FALLBACK kernel/Kbuild; then
             sed -i "s|^KSU_VERSION_FALLBACK := .*|KSU_VERSION_FALLBACK := ${KSU_CODE}|"        kernel/Kbuild
             sed -i "s|^KSU_VERSION_TAG_FALLBACK := .*|KSU_VERSION_TAG_FALLBACK := ${KSU_TAG}|" kernel/Kbuild
@@ -500,4 +501,4 @@ jobs:
         run: |
           set -eu
           cat > issue.md <<EOF
-          Build failed: [run ${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_
+          Build failed: [run ${{ github.run_id }}](https://github.com/${{ github.repository }}/actions
