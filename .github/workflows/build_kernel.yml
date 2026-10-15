@@ -355,7 +355,7 @@ jobs:
             || { echo "::error::$(basename "$PATCH") failed to apply"; exit 1; }
           echo "SUSFS kernel patch applied"
 
-      - name: Add KernelSU-Next
+       - name: Add KernelSU-Next
         id: ksu
         if: env.KSU_VAR != 'NO-ROOT'
         run: |
@@ -499,4 +499,4 @@ jobs:
         with:
           name: build-log-${{ github.run_id }}
           path: build.log
-          if
+          i
