@@ -21,11 +21,6 @@ on:
         type: boolean
         required: true
         default: false
-      susfs_patch:
-        description: "Apply SUSFS kernel patch?"
-        type: boolean
-        required: true
-        default: false
   push:
     branches: [A346E]
   pull_request:
@@ -40,12 +35,10 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  G_EXT: ${{ github.workspace }}/external_deps
   AK3_REPO: https://github.com/BS1388/AnyKernel3-a34x.git
   KSU_VAR: ${{ github.event.inputs.ksu_variant || (github.event_name == 'push' && 'KSUN') || 'NO-ROOT' }}
   PERMISSIVE: ${{ github.event.inputs.permissive || 'false' }}
   CUSTOM_PATCH: ${{ github.event.inputs.custom_patches || 'false' }}
-  SUSFS_PATCH: ${{ github.event.inputs.susfs_patch || 'false' }}
 
 jobs:
   detect:
@@ -78,7 +71,6 @@ jobs:
           echo "KSU variant : $KSU_VAR"
           echo "SELinux     : $SEL"
           echo "extra patch : $CUSTOM_PATCH"
-          echo "SUSFS patch : $SUSFS_PATCH"
           {
             echo "## Build A346E Kernel"
             echo ""
@@ -88,7 +80,6 @@ jobs:
             echo "| KSUN source | \`dev branch HEAD (latest at run time)\` |"
             echo "| SELinux | \`${SEL}\` |"
             echo "| Extra patches (patch/*.patch) | \`${CUSTOM_PATCH}\` |"
-            echo "| SUSFS kernel patch | \`${SUSFS_PATCH}\` |"
             echo "| Kernel tree | \`${REAL_DIR}\` (\`${VER}\`) |"
             echo "| Package | \`AnyKernel3-a34x\` |"
             echo "| Commit | \`${GITHUB_SHA:0:12}\` |"
@@ -229,7 +220,7 @@ jobs:
           if [ "$CUSTOM_PATCH" = "true" ]; then
             shopt -s nullglob
             EXTRA=(patch/*.patch)
-            [ ${
+            [ ${#EXTRA[@]} -gt 0 ] || echo "::warning::CUSTOM_PATCH=true but patch/ has no *.patch file"
             for p in "${EXTRA[@]}"; do check_patch "$p" || FAIL=1; done
           fi
           [ "$FAIL" = "0" ] || exit 1
@@ -330,30 +321,9 @@ jobs:
           [ -n "$REAL_DIR" ] || { echo "::error::no kernel tree found"; exit 1; }
           SEL=$([ "$PERMISSIVE" = "true" ] && echo permissive || echo enforcing)
           CUS=$([ "$CUSTOM_PATCH" = "true" ] && echo custom || echo nocustom)
-          SUS=$([ "$SUSFS_PATCH" = "true" ] && echo susfs || echo nosusfs)
           { echo "REAL_DIR=$REAL_DIR"; echo "G_KERNEL=$GITHUB_WORKSPACE/$REAL_DIR"; } >> "$GITHUB_ENV"
           echo "selinux=$SEL" >> "$GITHUB_OUTPUT"
-          echo "artifact=AnyKernel3-A346E-${KSU_VAR}-${SEL}-${CUS}-${SUS}" >> "$GITHUB_OUTPUT"
-
-      - name: SUSFS kernel patch
-        if: env.SUSFS_PATCH == 'true'
-        run: |
-          set -eu
-          mkdir -p "$G_EXT"
-          git clone --depth 1 -b gki-android15-6.6 https://gitlab.com/simonpunk/susfs4ksu.git "$G_EXT/susfs4ksu"
-          SRC="$G_EXT/susfs4ksu/kernel_patches"
-          PATCH="$SRC/50_add_susfs_in_gki-android15-6.6.patch"
-          for d in "$SRC/fs" "$SRC/include/linux"; do
-            [ -d "$d" ] || { echo "::error::missing dir $d"; exit 1; }
-          done
-          [ -f "$PATCH" ] || { echo "::error::missing $PATCH"; exit 1; }
-
-          cd "$G_KERNEL"
-          cp -rv "$SRC/fs/."            fs/
-          cp -rv "$SRC/include/linux/." include/linux/
-          patch -p1 --forward --batch < "$PATCH" \
-            || { echo "::error::$(basename "$PATCH") failed to apply"; exit 1; }
-          echo "SUSFS kernel patch applied"
+          echo "artifact=AnyKernel3-A346E-${KSU_VAR}-${SEL}-${CUS}" >> "$GITHUB_OUTPUT"
 
       - name: Add KernelSU-Next
         id: ksu
@@ -370,8 +340,7 @@ jobs:
           KSU_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo dev)
           KSU_CODE=$((30000 + $(git rev-list --count HEAD 2>/dev/null || echo 0)))
           KSU_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
-          
-          
+      
           if [ -f kernel/Kbuild ] && grep -q KSU_VERSION_FALLBACK kernel/Kbuild; then
             sed -i "s|^KSU_VERSION_FALLBACK := .*|KSU_VERSION_FALLBACK := ${KSU_CODE}|"        kernel/Kbuild
             sed -i "s|^KSU_VERSION_TAG_FALLBACK := .*|KSU_VERSION_TAG_FALLBACK := ${KSU_TAG}|" kernel/Kbuild
@@ -499,8 +468,32 @@ jobs:
             echo "| | |"
             echo "|---|---|"
             echo "| KSU variant | \`${KSU_VAR}\` |"
-            echo "| SUSFS patch | \`${SUSFS_PATCH}\` |"
             echo "| KernelSU-Next | \`${{ needs.build.outputs.ksu_tag || 'n/a' }}\` (\`${{ needs.build.outputs.ksu_code || 'n/a' }}\`) |"
             echo "| SELinux | \`${{ needs.build.outputs.selinux || env.PERMISSIVE }}\` |"
             echo "| Image | \`${{ needs.build.outputs.image_size || 'n/a' }}\` sha256:\`${{ needs.build.outputs.image_sha || 'n/a' }}\` |"
-            e
+            echo "| Artifact | \`${{ needs.build.outputs.artifact || 'n/a' }}\` (flashable AnyKernel3 zip) |"
+            echo ""
+            echo "Pipeline: #1 ●──● #2 ●──● #3 ●──● #4 ●──● #5 ●──● #6 ●──● #7"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open an issue when the build fails
+        if: needs.build.result == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          cat > issue.md <<EOF
+          Build failed: [run ${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+          | field | value |
+          |---|---|
+          | commit | \`${{ github.sha }}\` |
+          | branch | \`${{ github.ref_name }}\` |
+          | KSU | \`${KSU_VAR}\` |
+          | permissive | \`${PERMISSIVE}\` |
+          | extra patches | \`${CUSTOM_PATCH}\` |
+
+          The \`build-log-${{ github.run_id }}\` artifact of that run has the full log.
+          EOF
+          gh issue create --title "Build failed #${{ github.run_id }} [${KSU_VAR}]" --body-file issue.md || true
+          
