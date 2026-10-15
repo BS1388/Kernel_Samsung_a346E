@@ -336,7 +336,7 @@ jobs:
           echo "artifact=AnyKernel3-A346E-${KSU_VAR}-${SEL}-${CUS}-${SUS}" >> "$GITHUB_OUTPUT"
 
       - name: SUSFS kernel patch
-        if: env.SUSFS_PATCH == 'true' && env.KSU_VAR != 'NO-ROOT'
+        if: env.SUSFS_PATCH == 'true'
         run: |
           set -eu
           mkdir -p "$G_EXT"
