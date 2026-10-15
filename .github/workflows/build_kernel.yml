@@ -384,6 +384,24 @@ jobs:
           { echo "ksu_tag=$KSU_TAG"; echo "ksu_code=$KSU_CODE"; } >> "$GITHUB_OUTPUT"
           echo "KernelSU-Next $KSU_TAG ($KSU_CODE) @ $KSU_SHA"
 
+      - name: SUSFS KernelSU-side patch
+        if: env.SUSFS_PATCH == 'true' && env.KSU_VAR != 'NO-ROOT'
+        run: |
+          set -eu
+          PATCH="$G_EXT/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+          [ -f "$PATCH" ] || { echo "::error::missing $PATCH"; exit 1; }
+          cd "$G_KERNEL/KernelSU-Next"
+          if patch -p1 --forward --batch --dry-run < "$PATCH" > /tmp/ksu_susfs.log 2>&1; then
+            patch -p1 --forward --batch < "$PATCH"
+            echo "SUSFS KernelSU-side patch applied"
+          elif grep -q "Reversed (or previously applied)" /tmp/ksu_susfs.log; then
+            echo "SUSFS KernelSU-side patch already applied"
+          else
+            echo "::error::10_enable_susfs_for_ksu.patch does not apply to this KernelSU-Next"
+            cat /tmp/ksu_susfs.log
+            exit 1
+          fi
+
       - name: Defconfig (KSU + IPSet)
         run: |
           set -eu
@@ -481,38 +499,4 @@ jobs:
         with:
           name: build-log-${{ github.run_id }}
           path: build.log
-          if-no-files-found: warn
-
-  upload-summary:
-    name: "#7 Upload & Summary"
-    needs: build
-    if: always()
-    runs-on: ubuntu-22.04
-    timeout-minutes: 10
-    steps:
-      - name: Report
-        run: |
-          set -eu
-          {
-            echo "### #7 Result: \`${{ needs.build.result }}\`"
-            echo ""
-            echo "| | |"
-            echo "|---|---|"
-            echo "| KSU variant | \`${KSU_VAR}\` |"
-            echo "| SUSFS patch | \`${SUSFS_PATCH}\` |"
-            echo "| KernelSU-Next | \`${{ needs.build.outputs.ksu_tag || 'n/a' }}\` (\`${{ needs.build.outputs.ksu_code || 'n/a' }}\`) |"
-            echo "| SELinux | \`${{ needs.build.outputs.selinux || env.PERMISSIVE }}\` |"
-            echo "| Image | \`${{ needs.build.outputs.image_size || 'n/a' }}\` sha256:\`${{ needs.build.outputs.image_sha || 'n/a' }}\` |"
-            echo "| Artifact | \`${{ needs.build.outputs.artifact || 'n/a' }}\` (flashable AnyKernel3 zip) |"
-            echo ""
-            echo "Pipeline: #1 ●──● #2 ●──● #3 ●──● #4 ●──● #5 ●──● #6 ●──● #7"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Open an issue when the build fails
-        if: needs.build.result == 'failure'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -eu
-          cat > issue.md <<EOF
-          Build failed: [run ${{ github.run_id }}](https://github.com/${{ github.repository }}/actions
+          if
