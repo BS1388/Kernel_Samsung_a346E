@@ -383,11 +383,12 @@ jobs:
           { echo "KSU_GIT_TAG=$KSU_TAG"; echo "KSU_VERSION=$KSU_CODE"; echo "KSU_COMMIT=$KSU_SHA"; } >> "$GITHUB_ENV"
           { echo "ksu_tag=$KSU_TAG"; echo "ksu_code=$KSU_CODE"; } >> "$GITHUB_OUTPUT"
           echo "KernelSU-Next $KSU_TAG ($KSU_CODE) @ $KSU_SHA"
-          
-        - name: SUSFS KernelSU-side patch
-        if: env.SUSFS_PATCH == 'true' && env.KSU_VAR != 'NO-ROOT'
+
+      - name: SUSFS KernelSU-side patch
+        if: env.KSU_VAR != 'NO-ROOT'
+        if: env.SUSFS_PATCH == 'true'
         run: |
-         set -eu
+          set -eu
           PATCH="$GITHUB_WORKSPACE/susfs/10_enable_susfs_for_ksu.patch"
           [ -f "$PATCH" ] || { echo "::error::missing $PATCH"; exit 1; }
           cd "$G_KERNEL/KernelSU-Next"
