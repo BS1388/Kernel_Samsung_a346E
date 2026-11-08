@@ -1,5 +1,4 @@
 name: Build A346E Kernel
-
 on:
   workflow_dispatch:
     inputs:
@@ -26,21 +25,17 @@ on:
     branches: [A346E]
   pull_request:
     branches: [A346E]
-
 permissions:
   contents: read
   issues: write
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
 env:
   AK3_REPO: https://github.com/BS1388/AnyKernel3-a34x.git
   KSU_VAR: ${{ github.event.inputs.ksu_variant || (github.event_name == 'push' && 'KSUN') || 'NO-ROOT' }}
   PERMISSIVE: ${{ github.event.inputs.permissive || 'false' }}
   CUSTOM_PATCH: ${{ github.event.inputs.custom_patches || 'false' }}
-
 jobs:
   detect:
     name: "#1 Checkout & Detect"
@@ -51,7 +46,6 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 1
-
       - name: Detect kernel tree & build options
         run: |
           set -eu
@@ -64,21 +58,14 @@ jobs:
             || { echo "::error::gki_defconfig missing in $REAL_DIR"; exit 1; }
           [ -f Google-FDO/kernel.afdo ] || [ -f google-FDO/kernel.afdo ] \
             || echo "::warning::Google-FDO/kernel.afdo missing"
-
           SEL=$([ "$PERMISSIVE" = "true" ] && echo permissive || echo enforcing)
           VER=$(awk '/^(VERSION|PATCHLEVEL|SUBLEVEL) =/{printf "%s%s", s, $3; s="."}' "$REAL_DIR/Makefile")
-
-          echo "kernel tree : $REAL_DIR ($VER)"
-          echo "KSU variant : $KSU_VAR"
-          echo "SELinux     : $SEL"
-          echo "extra patch : $CUSTOM_PATCH"
           {
             echo "## Build A346E Kernel"
             echo ""
             echo "| option | value |"
             echo "|---|---|"
             echo "| KSU variant | \`${KSU_VAR}\` |"
-            echo "| KSUN source | \`dev branch HEAD (latest at run time)\` |"
             echo "| SELinux | \`${SEL}\` |"
             echo "| Extra patches (patch/*.patch) | \`${CUSTOM_PATCH}\` |"
             echo "| Kernel tree | \`${REAL_DIR}\` (\`${VER}\`) |"
@@ -87,7 +74,6 @@ jobs:
             echo ""
             echo "### #1 Checkout & Detect - OK"
           } >> "$GITHUB_STEP_SUMMARY"
-
   system-prep:
     name: "#2 System Prep"
     needs: detect
@@ -109,7 +95,6 @@ jobs:
             command -v "$t" >/dev/null || { echo "::error::missing $t"; exit 1; }
           done
           echo "### #2 System Prep - OK (${AVAIL} GB free before cleanup)" >> "$GITHUB_STEP_SUMMARY"
-
   external-deps:
     name: "#3 External Deps"
     needs: system-prep
@@ -122,29 +107,18 @@ jobs:
           git ls-remote --exit-code "$AK3_REPO" HEAD >/dev/null \
             || { echo "::error::AnyKernel3 repo unreachable: $AK3_REPO"; exit 1; }
           echo "AnyKernel3 OK: $AK3_REPO"
-
       - name: Check KernelSU source
-        if: env.KSU_VAR == 'KSU'
-        run: |
-          set -eu
-          URL="https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh"
-          curl -fsSL --retry 3 "$URL" -o /tmp/setup.sh
-          head -n 1 /tmp/setup.sh | grep -q '^#!' || { echo "::error::setup.sh does not look like a script"; exit 1; }
-          echo "setup.sh OK ($(wc -l < /tmp/setup.sh) lines) from $URL"
-
-      - name: Check KernelSU-Next source
-        if: env.KSU_VAR == 'KSUN'
+        if: env.KSU_VAR != 'NO-ROOT'
         run: |
           set -eu
           URL="https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/refs/heads/dev/kernel/setup.sh"
+          [ "$KSU_VAR" != KSU ] || URL="https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh"
           curl -fsSL --retry 3 "$URL" -o /tmp/setup.sh
           head -n 1 /tmp/setup.sh | grep -q '^#!' || { echo "::error::setup.sh does not look like a script"; exit 1; }
           echo "setup.sh OK ($(wc -l < /tmp/setup.sh) lines) from $URL"
-
       - name: Summary
         run: |
           echo "### #3 External Deps - OK (${KSU_VAR})" >> "$GITHUB_STEP_SUMMARY"
-
   patches:
     name: "#4 Patches"
     needs: external-deps
@@ -155,7 +129,6 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 1
-
       - name: Detect kernel dir
         run: |
           set -eu
@@ -163,14 +136,12 @@ jobs:
             if [ -f "$d/Makefile" ]; then echo "KDIR=$d" >> "$GITHUB_ENV"; exit 0; fi
           done
           echo "::error::no kernel tree found"; exit 1
-
       - name: kernel-6.6 patches (always applied)
         run: |
           set -eu
           A="kernel/patches-kernel-6.6/apply.sh"
           [ -f "$A" ] || { echo "::error::$A missing"; exit 1; }
           bash "$A" --check "$KDIR"
-
       - name: Verify in-tree fixes (vendor / device modules)
         run: |
           set -eu
@@ -188,14 +159,12 @@ jobs:
           check "BTCVSD SCO resync/xrun recovery" "$BT" "mtk_btcvsd_snd_band_resync"
           check "BTCVSD rx overrun self-recovery" "$BT" "mtk_btcvsd_snd_rx_resync"
           check "BTCVSD silence priming"          "$BT" "mtk_btcvsd_snd_silence_prime"
-
           Z="$KDIR/drivers/block/zram/zram_drv.c"
           if grep -qE '^static const char \*default_compressor = (CONFIG_ZRAM_DEF_COMP|"[a-z0-9-]+");' "$Z"; then
             echo "OK      zram default_compressor is valid C"
           else
             echo "::error::BROKEN zram default_compressor:"; grep -n "default_compressor =" "$Z" || true; FAIL=1
           fi
-
           HITS=$(grep -rl --include=*.c --include=*.h "get_current_cred_module\|put_cred_module" vendor 2>/dev/null || true)
           if [ -n "$HITS" ]; then
             echo "::error::Samsung-only cred API still present in vendor/:"
@@ -204,9 +173,7 @@ jobs:
           else
             echo "OK      no Samsung-only cred API in vendor/"
           fi
-
           [ "$FAIL" = "0" ] || { echo "::error::a fix is missing from the source tree - the build would fail"; exit 1; }
-
       - name: Optional patches (permissive / patch/*.patch)
         if: env.PERMISSIVE == 'true' || env.CUSTOM_PATCH == 'true'
         run: |
@@ -234,60 +201,34 @@ jobs:
             for p in "${EXTRA[@]}"; do check_patch "$p" || FAIL=1; done
           fi
           [ "$FAIL" = "0" ] || exit 1
-
       - name: Summary
         run: |
-          {
-            echo "### #4 Patches - OK"
-            echo "- kernel-6.6 patches (\`kernel/patches-kernel-6.6/\`): validated"
-            echo "- permissive patch: \`${PERMISSIVE}\`"
-            echo "- extra patches (\`patch/*.patch\`): \`${CUSTOM_PATCH}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
+          echo "### #4 Patches - OK (permissive: ${PERMISSIVE}, extra patches: ${CUSTOM_PATCH})" >> "$GITHUB_STEP_SUMMARY"
   kernelsu:
     name: "#5 KernelSU"
     needs: patches
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
-      - name: Resolve KernelSU-Next version
+      - name: Resolve KernelSU version
         id: resolve
-        if: env.KSU_VAR == 'KSUN'
+        if: env.KSU_VAR != 'NO-ROOT'
         run: |
           set -eu
           REPO=https://github.com/KernelSU-Next/KernelSU-Next.git; BRANCH=dev
-          git clone -q --branch "$BRANCH" "$REPO" /tmp/ksun
-          cd /tmp/ksun
-          TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo dev)
+          [ "$KSU_VAR" != KSU ] || { REPO=https://github.com/tiann/KernelSU.git; BRANCH=main; }
+          git clone -q --branch "$BRANCH" "$REPO" /tmp/ksu
+          cd /tmp/ksu
+          TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "$BRANCH")
           CODE=$((30000 + $(git rev-list --count HEAD)))
           SHA=$(git rev-parse --short HEAD)
           { echo "ksu_tag=$TAG"; echo "ksu_code=$CODE"; echo "ksu_sha=$SHA"; } >> "$GITHUB_OUTPUT"
-          echo "KernelSU-Next $BRANCH: $TAG ($CODE) @ $SHA"
-          grep -q KSU_VERSION_FALLBACK kernel/Kbuild \
+          echo "$KSU_VAR $BRANCH: $TAG ($CODE) @ $SHA"
+          [ "$KSU_VAR" = KSU ] || grep -q KSU_VERSION_FALLBACK kernel/Kbuild \
             || echo "::warning::kernel/Kbuild has no KSU_VERSION_FALLBACK - the v0.0.1 fix may need updating"
-
-      - name: Resolve KernelSU version
-        id: resolve_ksu
-        if: env.KSU_VAR == 'KSU'
-        run: |
-          set -eu
-          REPO=https://github.com/tiann/KernelSU.git; BRANCH=main
-          git clone -q --branch "$BRANCH" "$REPO" /tmp/ksu
-          cd /tmp/ksu
-          TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo main)
-          CODE=$((10200 + $(git rev-list --count HEAD)))
-          SHA=$(git rev-parse --short HEAD)
-          { echo "ksu_tag=$TAG"; echo "ksu_code=$CODE"; echo "ksu_sha=$SHA"; } >> "$GITHUB_OUTPUT"
-          echo "KernelSU $BRANCH: $TAG ($CODE) @ $SHA"
-
       - name: Summary
         run: |
-          {
-            echo "### #5 KernelSU - OK"
-            echo "- KernelSU-Next: \`${{ steps.resolve.outputs.ksu_tag || 'n/a' }}\` (\`${{ steps.resolve.outputs.ksu_code || 'n/a' }}\`) @ \`${{ steps.resolve.outputs.ksu_sha || 'n/a' }}\`"
-            echo "- KernelSU: \`${{ steps.resolve_ksu.outputs.ksu_tag || 'n/a' }}\` (\`${{ steps.resolve_ksu.outputs.ksu_code || 'n/a' }}\`) @ \`${{ steps.resolve_ksu.outputs.ksu_sha || 'n/a' }}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
+          echo "### #5 KernelSU - OK (${KSU_VAR} ${{ steps.resolve.outputs.ksu_tag || 'n/a' }}, ${{ steps.resolve.outputs.ksu_code || 'n/a' }})" >> "$GITHUB_STEP_SUMMARY"
   build:
     name: "#6 Build"
     needs: kernelsu
@@ -298,14 +239,13 @@ jobs:
       image_sha: ${{ steps.build.outputs.image_sha }}
       artifact: ${{ steps.meta.outputs.artifact }}
       selinux: ${{ steps.meta.outputs.selinux }}
-      ksu_tag: ${{ steps.ksu.outputs.ksu_tag || steps.ksu_official.outputs.ksu_tag }}
-      ksu_code: ${{ steps.ksu.outputs.ksu_code || steps.ksu_official.outputs.ksu_code }}
+      ksu_tag: ${{ steps.ksu.outputs.ksu_tag }}
+      ksu_code: ${{ steps.ksu.outputs.ksu_code }}
     steps:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
           fetch-depth: 1
-
       - name: Free disk space
         run: |
           set -eu
@@ -319,7 +259,6 @@ jobs:
           sudo apt-get autoremove -y >/dev/null 2>&1 || true
           sudo apt-get clean || true
           echo "--- after ---"; df -h /
-
       - name: Install host dependencies
         run: |
           set -eu
@@ -334,7 +273,6 @@ jobs:
           git config --global user.email "builder@example.com"
           git config --global user.name  "Builder"
           git config --global --add safe.directory "*"
-
       - name: Set kernel dir & artifact name
         id: meta
         run: |
@@ -349,71 +287,44 @@ jobs:
           { echo "REAL_DIR=$REAL_DIR"; echo "G_KERNEL=$GITHUB_WORKSPACE/$REAL_DIR"; } >> "$GITHUB_ENV"
           echo "selinux=$SEL" >> "$GITHUB_OUTPUT"
           echo "artifact=AnyKernel3-A346E-${KSU_VAR}-${SEL}-${CUS}" >> "$GITHUB_OUTPUT"
-
       - name: Add KernelSU
-        id: ksu_official
-        if: env.KSU_VAR == 'KSU'
-        run: |
-          set -eu
-          cd "$G_KERNEL"
-          rm -rf KernelSU
-          curl -LSs --retry 3 https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh -o /tmp/ksu_setup.sh
-          bash /tmp/ksu_setup.sh main
-          [ -d KernelSU ] || { echo "::error::KernelSU missing after setup.sh"; exit 1; }
-
-          cd KernelSU
-          KSU_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo main)
-          KSU_CODE=$((10200 + $(git rev-list --count HEAD 2>/dev/null || echo 0)))
-          KSU_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
-
-          if [ -f kernel/Kbuild ] && grep -q KSU_VERSION_FALLBACK kernel/Kbuild; then
-            sed -i "s|^KSU_VERSION_FALLBACK := .*|KSU_VERSION_FALLBACK := ${KSU_CODE}|"        kernel/Kbuild
-            sed -i "s|^KSU_VERSION_TAG_FALLBACK := .*|KSU_VERSION_TAG_FALLBACK := ${KSU_TAG}|" kernel/Kbuild
-            grep -n "KSU_VERSION_FALLBACK\|KSU_VERSION_TAG_FALLBACK" kernel/Kbuild
-          else
-            echo "::warning::KSU_VERSION_FALLBACK not found in KernelSU kernel/Kbuild - if the manager says the kernel version is too low, the version needs patching here"
-            grep -n "VERSION" kernel/Kbuild kernel/Makefile 2>/dev/null | head -n 20 || true
-          fi
-
-          { echo "KSU_GIT_TAG=$KSU_TAG"; echo "KSU_VERSION=$KSU_CODE"; echo "KSU_COMMIT=$KSU_SHA"; } >> "$GITHUB_ENV"
-          { echo "ksu_tag=$KSU_TAG"; echo "ksu_code=$KSU_CODE"; } >> "$GITHUB_OUTPUT"
-          echo "KernelSU $KSU_TAG ($KSU_CODE) @ $KSU_SHA"
-
-      - name: Add KernelSU-Next
         id: ksu
-        if: env.KSU_VAR == 'KSUN'
+        if: env.KSU_VAR != 'NO-ROOT'
         run: |
           set -eu
           cd "$G_KERNEL"
-          rm -rf KernelSU-Next
-          curl -LSs --retry 3 https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/refs/heads/dev/kernel/setup.sh -o /tmp/ksun_setup.sh
-          sh /tmp/ksun_setup.sh dev
-          [ -d KernelSU-Next ] || { echo "::error::KernelSU-Next missing after setup.sh"; exit 1; }
-
-          cd KernelSU-Next
-          KSU_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo dev)
+          D=KernelSU-Next; B=dev; SH=sh
+          U=https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/refs/heads/dev/kernel/setup.sh
+          if [ "$KSU_VAR" = KSU ]; then
+            D=KernelSU; B=main; SH=bash
+            U=https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh
+          fi
+          rm -rf "$D"
+          curl -LSs --retry 3 "$U" -o /tmp/ksu_setup.sh
+          $SH /tmp/ksu_setup.sh "$B"
+          [ -d "$D" ] || { echo "::error::$D missing after setup.sh"; exit 1; }
+          cd "$D"
+          KSU_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "$B")
           KSU_CODE=$((30000 + $(git rev-list --count HEAD 2>/dev/null || echo 0)))
           KSU_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
-      
           if [ -f kernel/Kbuild ] && grep -q KSU_VERSION_FALLBACK kernel/Kbuild; then
             sed -i "s|^KSU_VERSION_FALLBACK := .*|KSU_VERSION_FALLBACK := ${KSU_CODE}|"        kernel/Kbuild
             sed -i "s|^KSU_VERSION_TAG_FALLBACK := .*|KSU_VERSION_TAG_FALLBACK := ${KSU_TAG}|" kernel/Kbuild
             grep -n "KSU_VERSION_FALLBACK\|KSU_VERSION_TAG_FALLBACK" kernel/Kbuild
+          elif grep -q -- '-DKSU_VERSION=16$' kernel/Kbuild; then
+            sed -i "s|-DKSU_VERSION=16\$|-DKSU_VERSION=${KSU_CODE}|" kernel/Kbuild
           else
-            echo "::warning::KSU_VERSION_FALLBACK not found in kernel/Kbuild (layout changed?)"
+            echo "::warning::no known version fallback in $D/kernel/Kbuild (layout changed?)"
           fi
-
           { echo "KSU_GIT_TAG=$KSU_TAG"; echo "KSU_VERSION=$KSU_CODE"; echo "KSU_COMMIT=$KSU_SHA"; } >> "$GITHUB_ENV"
           { echo "ksu_tag=$KSU_TAG"; echo "ksu_code=$KSU_CODE"; } >> "$GITHUB_OUTPUT"
-          echo "KernelSU-Next $KSU_TAG ($KSU_CODE) @ $KSU_SHA"
-
+          echo "$D $KSU_TAG ($KSU_CODE) @ $KSU_SHA"
       - name: Defconfig (KSU + IPSet)
         run: |
           set -eu
           DEFCONFIG="$G_KERNEL/arch/arm64/configs/gki_defconfig"
           sed -i '/^# >>> a346e-ci$/,/^# <<< a346e-ci$/d' "$DEFCONFIG"
           echo "# >>> a346e-ci" >> "$DEFCONFIG"
-
           case "$KSU_VAR" in
             KSU)
               cat >> "$DEFCONFIG" <<'EOF'
@@ -448,7 +359,6 @@ jobs:
           EOF
               ;;
           esac
-
           cat >> "$DEFCONFIG" <<'EOF'
           CONFIG_IP_SET=y
           CONFIG_IP_SET_MAX=65534
@@ -471,7 +381,6 @@ jobs:
           EOF
           echo "# <<< a346e-ci" >> "$DEFCONFIG"
           echo "--- defconfig tail ---"; tail -n 30 "$DEFCONFIG"
-
       - name: Build kernel
         id: build
         run: |
@@ -484,4 +393,71 @@ jobs:
             exit 1
           fi
           [ -f Image ] || { echo "::error::Image not produced"; find out -name Image -type f | head; exit 1; }
-          echo "image_size=$(du -h Image | awk '{print $1}')" >> "$GIT
+          echo "image_size=$(du -h Image | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "image_sha=$(sha256sum Image | cut -c1-16)"    >> "$GITHUB_OUTPUT"
+          if [ "$PERMISSIVE" = "true" ]; then
+            grep -q "SELinux permissive patch" build.log || echo "::warning::permissive requested but not confirmed in the log"
+          fi
+          ls -lh Image
+      - name: Package AnyKernel3
+        run: |
+          set -eu
+          git clone --depth 1 "$AK3_REPO" AnyKernel3
+          [ -f AnyKernel3/anykernel.sh ] || { echo "::error::anykernel.sh missing in $AK3_REPO"; exit 1; }
+          cp -v Image AnyKernel3/Image
+          rm -rf AnyKernel3/.git AnyKernel3/.github
+          ls -lh AnyKernel3
+      - name: Upload AnyKernel3 zip
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ steps.meta.outputs.artifact }}
+          path: AnyKernel3
+          if-no-files-found: error
+          compression-level: 6
+      - name: Upload build log (only when the build fails)
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-log-${{ github.run_id }}
+          path: build.log
+          if-no-files-found: warn
+  upload-summary:
+    name: "#7 Upload & Summary"
+    needs: build
+    if: always()
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Report
+        run: |
+          set -eu
+          {
+            echo "### #7 Result: \`${{ needs.build.result }}\`"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| KSU variant | \`${KSU_VAR}\` |"
+            echo "| KernelSU | \`${{ needs.build.outputs.ksu_tag || 'n/a' }}\` (\`${{ needs.build.outputs.ksu_code || 'n/a' }}\`) |"
+            echo "| SELinux | \`${{ needs.build.outputs.selinux || env.PERMISSIVE }}\` |"
+            echo "| Image | \`${{ needs.build.outputs.image_size || 'n/a' }}\` sha256:\`${{ needs.build.outputs.image_sha || 'n/a' }}\` |"
+            echo "| Artifact | \`${{ needs.build.outputs.artifact || 'n/a' }}\` (flashable AnyKernel3 zip) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Open an issue when the build fails
+        if: needs.build.result == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          cat > issue.md <<EOF
+          Build failed: [run ${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          | field | value |
+          |---|---|
+          | commit | \`${{ github.sha }}\` |
+          | branch | \`${{ github.ref_name }}\` |
+          | KSU | \`${KSU_VAR}\` |
+          | permissive | \`${PERMISSIVE}\` |
+          | extra patches | \`${CUSTOM_PATCH}\` |
+          The \`build-log-${{ github.run_id }}\` artifact of that run has the full log.
+          EOF
+          gh issue create --title "Build failed #${{ github.run_id }} [${KSU_VAR}]" --body-file issue.md || true
+          
