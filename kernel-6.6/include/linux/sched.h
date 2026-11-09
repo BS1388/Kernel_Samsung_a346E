@@ -1073,8 +1073,8 @@ struct task_struct {
 	struct nameidata		*nameidata;
 
 #ifdef CONFIG_SYSVIPC
-// 	struct sysv_sem			sysvsem;
-//	struct sysv_shm			sysvshm;
+	struct sysv_sem			sysvsem;
+	struct sysv_shm			sysvshm;
 #endif
 #ifdef CONFIG_DETECT_HUNG_TASK
 	unsigned long			last_switch_count;
@@ -1524,17 +1524,9 @@ struct task_struct {
 		unsigned	user_dumpable:1;
 		});
 
-#ifdef CONFIG_SYSVIPC
-    /* Use KABI padding for SysV IPC fields. */
-    ANDROID_KABI_USE(3, struct sysv_sem sysvsem);
-    _ANDROID_KABI_REPLACE(ANDROID_KABI_RESERVE(4); ANDROID_KABI_RESERVE(5), struct sysv_shm sysvshm);
-#else
-    /* Keep the KABI padding when SysV IPC is disabled. */
 	ANDROID_KABI_RESERVE(3);
 	ANDROID_KABI_RESERVE(4);
 	ANDROID_KABI_RESERVE(5);
-#endif
-
 	ANDROID_KABI_RESERVE(6);
 	ANDROID_KABI_RESERVE(7);
 	ANDROID_KABI_RESERVE(8);
